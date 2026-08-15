@@ -14,6 +14,7 @@
     "whoami"
   ],
   "required_paths": [
+    "boot/dash-d2.sh",
     "boot/etc/hello.txt",
     "etc/group",
     "etc/motd",

@@ -17,13 +17,13 @@ Keep `/bin/nsh` as the recovery and diagnostics shell.
 
 ## Status
 
-As of 2026-08-15, D0 and D1 are complete; D2 is next. A clean,
+As of 2026-08-16, D0 through D2 filesystem acceptance are complete. A clean,
 checksum-verified source preparation applies the ordered Silt patch set. The
 Arm GNU cross build produces the source-readiness archive and links it with a
 Silt-owned libc baseline into `dash.elf`; a separate audit rejects unresolved
 symbols in the process image. The image is installed as `/bin/dash` for the
-built-in-only QEMU language gate. Descriptor, filesystem, fork, exec, and wait
-entry points remain explicit `ENOSYS` boundaries for D2/D3.
+built-in and filesystem QEMU gate. Fork, exec, wait, and pipe entry points remain
+explicit `ENOSYS` boundaries for D3.
 
 ## Milestone D0: reproducible source and compile gate
 
@@ -56,11 +56,17 @@ opening files, forking, or acquiring undeclared capabilities.
 - Implement `openat`, `close`, `read`, `write`, `lseek`, `fstat`, `stat`,
   `fcntl`, `dup`, `dup2`, `getcwd`, `chdir`, `opendir`, and `readdir`.
 - Preserve descriptor state across fork and apply `FD_CLOEXEC` atomically at
-  exec commit.
+  exec commit. Silt's table is fork-copyable and mirrors all-descriptor
+  `FD_CLOEXEC` state into Neva handle flags; D3 owns survivor reconstruction
+  when it introduces `execve`.
 - Implement `/dev/null` and `/dev/tty` through explicit namespace/TTY grants.
 
 Acceptance: dash reads scripts, performs redirection, changes directories, and
 runs `test` without ambient VFS or fixed-handle assumptions.
+
+Evidence: the rootfs QEMU gate exercises those operations plus globbing,
+private `/tmp`, `/dev/null`, explicit `/dev/tty`, and the `/etc/shadow` data
+ceiling at 1, 4, and 8 vCPUs.
 
 ## Milestone D3: execution, wait, and pipelines
 

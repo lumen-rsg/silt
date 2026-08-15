@@ -170,6 +170,50 @@ def main() -> int:
         )
         run("status", (b"status=0",), "dash control-flow status")
 
+        print("\n=== dash descriptor and filesystem suite ===")
+        run(
+            "dash /boot/dash-d2.sh",
+            (b"DASH_SCRIPT=ok",),
+            "dash script input and stat",
+        )
+        run("status", (b"status=0",), "dash script status")
+        run(
+            "dash -c 'printf \"discarded\\n\" >/dev/null;printf \"DASH_REDIR=ok\\n\"'",
+            (b"DASH_REDIR=ok",),
+            "dash /dev/null redirection",
+        )
+        run("status", (b"status=0",), "dash device redirection status")
+        run(
+            "dash -c 'printf \"DASH_TMP=ok\\n\" >/tmp/dash.out;read value </tmp/dash.out;printf \"%s\\n\" \"$value\"'",
+            (b"DASH_TMP=ok",),
+            "dash private tmp redirection",
+        )
+        run("status", (b"status=0",), "dash file redirection status")
+        run(
+            "dash -c 'cd /etc && test -f os-release && pwd'",
+            (b"/etc",),
+            "dash cd, getcwd, and test",
+        )
+        run("status", (b"status=0",), "dash cwd status")
+        run(
+            "dash -c 'for path in /etc/os-*;do printf \"DASH_GLOB=%s\\n\" \"$path\";done'",
+            (b"DASH_GLOB=/etc/os-release",),
+            "dash directory enumeration",
+        )
+        run("status", (b"status=0",), "dash glob status")
+        run(
+            "dash -c 'printf \"DASH_TTY=ok\\n\" >/dev/tty'",
+            (b"DASH_TTY=ok",),
+            "dash explicit tty redirection",
+        )
+        run("status", (b"status=0",), "dash tty redirection status")
+        run(
+            "dash -c 'if test -r /etc/shadow;then false;else printf \"DASH_SHADOW=denied\\n\";fi'",
+            (b"DASH_SHADOW=denied",),
+            "dash directory grant data ceiling",
+        )
+        run("status", (b"status=0",), "dash shadow denial status")
+
         print("\n=== Session teardown ===")
         start = len(session.output)
         session.send("exit")

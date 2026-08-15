@@ -35,40 +35,6 @@ void _exit(int status) {
     sys_exit(status);
 }
 
-int write(int descriptor, const void* buffer, size_t size) {
-    if ((descriptor != STDOUT_FILENO && descriptor != STDERR_FILENO)
-        || (!buffer && size != 0)) {
-        errno = descriptor == STDOUT_FILENO || descriptor == STDERR_FILENO
-            ? EFAULT : EBADF;
-        return -1;
-    }
-    const unsigned char* bytes = buffer;
-    for (size_t index = 0; index < size; index++) neva_putc((char)bytes[index]);
-    return (int)size;
-}
-
-int read(int descriptor, void* buffer, size_t size) {
-    if (descriptor != STDIN_FILENO || (!buffer && size != 0)) {
-        errno = descriptor == STDIN_FILENO ? EFAULT : EBADF;
-        return -1;
-    }
-    unsigned char* bytes = buffer;
-    for (size_t index = 0; index < size; index++) bytes[index] = (unsigned char)neva_getc();
-    return (int)size;
-}
-
-int close(int descriptor) {
-    if (descriptor >= STDIN_FILENO && descriptor <= STDERR_FILENO) return 0;
-    errno = EBADF;
-    return -1;
-}
-
-int isatty(int descriptor) {
-    if (descriptor >= STDIN_FILENO && descriptor <= STDERR_FILENO) return 1;
-    errno = EBADF;
-    return 0;
-}
-
 pid_t getpid(void) {
     return (pid_t)sys_getpid();
 }
@@ -276,82 +242,10 @@ char* strsignal(int signal_number) {
     }
 }
 
-char* getcwd(char* buffer, size_t size) {
-    if (!buffer || size < 2) {
-        errno = ERANGE;
-        return NULL;
-    }
-    buffer[0] = '/';
-    buffer[1] = '\0';
-    return buffer;
-}
-
-int chdir(const char* path) {
-    if (path && strcmp(path, "/") == 0) return 0;
-    errno = ENOENT;
-    return -1;
-}
-
 mode_t umask(mode_t mask) {
     mode_t previous = g_umask;
     g_umask = mask & 0777;
     return previous;
-}
-
-int stat(const char* path, struct stat* status) {
-    (void)path;
-    if (status) memset(status, 0, sizeof(*status));
-    errno = ENOENT;
-    return -1;
-}
-
-int lstat(const char* path, struct stat* status) {
-    return stat(path, status);
-}
-
-int fstat(int descriptor, struct stat* status) {
-    if (status) memset(status, 0, sizeof(*status));
-    if (descriptor >= STDIN_FILENO && descriptor <= STDERR_FILENO) {
-        if (status) status->st_mode = S_IFCHR;
-        return 0;
-    }
-    errno = EBADF;
-    return -1;
-}
-
-int open(const char* path, int flags, ...) {
-    (void)path;
-    (void)flags;
-    errno = ENOSYS;
-    return -1;
-}
-
-off_t lseek(int descriptor, off_t offset, int origin) {
-    (void)descriptor;
-    (void)offset;
-    (void)origin;
-    errno = ESPIPE;
-    return (off_t)-1;
-}
-
-int fcntl(int descriptor, int command, ...) {
-    (void)descriptor;
-    (void)command;
-    errno = ENOSYS;
-    return -1;
-}
-
-int dup(int descriptor) {
-    (void)descriptor;
-    errno = ENOSYS;
-    return -1;
-}
-
-int dup2(int source, int destination) {
-    (void)source;
-    (void)destination;
-    errno = ENOSYS;
-    return -1;
 }
 
 int pipe(int descriptors[2]) {
@@ -383,24 +277,6 @@ pid_t wait3(int* status, int options, struct rusage* usage) {
     (void)options;
     (void)usage;
     errno = ECHILD;
-    return -1;
-}
-
-DIR* opendir(const char* path) {
-    (void)path;
-    errno = ENOSYS;
-    return NULL;
-}
-
-struct dirent* readdir(DIR* directory) {
-    (void)directory;
-    errno = ENOSYS;
-    return NULL;
-}
-
-int closedir(DIR* directory) {
-    (void)directory;
-    errno = ENOSYS;
     return -1;
 }
 

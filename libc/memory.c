@@ -159,6 +159,20 @@ void* memrchr(const void* memory, int character, size_t size) {
     return NULL;
 }
 
+char* strcat(char* destination, const char* source) {
+    char* end = destination + strlen(destination);
+    strcpy(end, source);
+    return destination;
+}
+
+char* strrchr(const char* string, int character) {
+    const char* match = NULL;
+    do {
+        if (*string == (char)character) match = string;
+    } while (*string++ != '\0');
+    return (char*)match;
+}
+
 char* stpncpy(char* destination, const char* source, size_t size) {
     while (size > 0 && *source) {
         *destination++ = *source++;

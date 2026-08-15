@@ -108,6 +108,7 @@ dash_port_archive = static_library(
 
 silt_libc_sources = files(
   'libc/ctype.c',
+  'libc/descriptors.c',
   'libc/format.c',
   'libc/memory.c',
   'libc/runtime.c',
@@ -235,6 +236,7 @@ endforeach
 
 rootfs_manifest = files('rootfs/manifest.json')
 rootfs_sources = files(
+  'rootfs/boot/dash-d2.sh',
   'rootfs/etc/motd',
   'rootfs/etc/os-release',
 )
@@ -293,7 +295,7 @@ run_target(
 summary(
   {
     'dash version': '0.5.13.5',
-    'dash mode': 'linked built-in-only D1 image',
+    'dash mode': 'D2 descriptor/filesystem image',
     'job control': 'disabled until the Silt POSIX adapter is ready',
     'line editing': 'disabled (dash SMALL configuration)',
     'Neva source': neva_source_dir,
