@@ -1,5 +1,4 @@
 __errno
-_ctype_
 _exit
 abort
 atoi
@@ -22,7 +21,11 @@ getgroups
 getpid
 getppid
 getuid
+isalnum
+isalpha
 isatty
+isdigit
+isspace
 iswblank
 iswctype
 iswspace

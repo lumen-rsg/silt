@@ -2,6 +2,7 @@
   "format": "nevfs-v1",
   "size_mib": 8,
   "applications": [
+    "dash",
     "echo",
     "false",
     "id",

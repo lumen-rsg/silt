@@ -12,8 +12,9 @@ project(
 
 fs = import('fs')
 python = find_program('python3')
-cross_cc = find_program('aarch64-none-elf-gcc')
-cross_ld = find_program('aarch64-none-elf-ld')
+cross_cc = find_program('c', native: false)
+cross_ld = find_program('ld', native: false)
+cross_nm = find_program('nm', native: false)
 source_root = meson.current_source_dir()
 dash_root = source_root / 'vendor/dash-0.5.13.5'
 dash_src = dash_root / 'src'
@@ -105,6 +106,41 @@ dash_port_archive = static_library(
   install: false,
 )
 
+silt_libc_sources = files(
+  'libc/ctype.c',
+  'libc/format.c',
+  'libc/memory.c',
+  'libc/runtime.c',
+  'libc/setjmp.S',
+)
+silt_libc_includes = include_directories(
+  'include/posix',
+  neva_source_dir / 'apps',
+  neva_source_dir / 'ports',
+)
+silt_libc_c_args = [
+  '-march=armv8-a',
+  '-ffreestanding',
+  '-nostdlib',
+  '-fno-builtin',
+  '-Os',
+  '-Wall',
+  '-Wextra',
+  '-Wpedantic',
+  '-Werror',
+  '-std=c2x',
+  '-fstack-protector-strong',
+  '-ffile-prefix-map=' + source_root + '=.',
+  '-fdebug-prefix-map=' + source_root + '=.',
+]
+silt_libc = static_library(
+  'silt-libc',
+  silt_libc_sources,
+  include_directories: silt_libc_includes,
+  c_args: silt_libc_c_args,
+  install: false,
+)
+
 test(
   'dash-required-symbol-contract',
   find_program('tools/audit_dash_symbols.sh'),
@@ -151,6 +187,23 @@ silt_app_link_args = [
   '-static',
 ]
 
+dash_app = custom_target(
+  'silt-dash-app',
+  output: 'dash.elf',
+  command: [cross_ld] + silt_app_link_args + [
+    neva_crt0,
+    '--start-group', dash_port_archive, silt_libc, neva_libneva, '--end-group',
+    '-o', '@OUTPUT@',
+  ],
+  depends: [dash_port_archive, silt_libc],
+)
+
+test(
+  'dash-linked-symbol-closure',
+  python,
+  args: [files('tools/audit_dash_link.py'), '--nm', cross_nm.full_path(), dash_app],
+)
+
 silt_app_targets = {}
 foreach app_name : silt_app_names
   app_extra_link_args = []
@@ -194,9 +247,11 @@ rootfs_command = [
   '--output', '@OUTPUT@',
 ]
 rootfs_dependencies = []
-foreach app_name : silt_app_names
-  rootfs_command += ['--app', app_name, silt_app_targets[app_name]]
-  rootfs_dependencies += silt_app_targets[app_name]
+rootfs_app_names = ['dash'] + silt_app_names
+rootfs_app_targets = {'dash': dash_app} + silt_app_targets
+foreach app_name : rootfs_app_names
+  rootfs_command += ['--app', app_name, rootfs_app_targets[app_name]]
+  rootfs_dependencies += rootfs_app_targets[app_name]
 endforeach
 
 silt_rootfs = custom_target(
@@ -238,7 +293,7 @@ run_target(
 summary(
   {
     'dash version': '0.5.13.5',
-    'dash mode': 'compile-readiness archive',
+    'dash mode': 'linked built-in-only D1 image',
     'job control': 'disabled until the Silt POSIX adapter is ready',
     'line editing': 'disabled (dash SMALL configuration)',
     'Neva source': neva_source_dir,

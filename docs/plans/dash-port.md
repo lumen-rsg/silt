@@ -17,11 +17,13 @@ Keep `/bin/nsh` as the recovery and diagnostics shell.
 
 ## Status
 
-As of 2026-08-15, D0 is complete. A clean, checksum-verified source
-preparation applies the ordered Silt patch set and the Arm GNU cross build
-produces `libsilt-dash-port.a` without warnings. The archive has 85 unresolved
-external symbols, frozen in `ports/dash/required-symbols.txt`; D1 closes the
-built-in-only subset before descriptor and process work begins.
+As of 2026-08-15, D0 and D1 are complete; D2 is next. A clean,
+checksum-verified source preparation applies the ordered Silt patch set. The
+Arm GNU cross build produces the source-readiness archive and links it with a
+Silt-owned libc baseline into `dash.elf`; a separate audit rejects unresolved
+symbols in the process image. The image is installed as `/bin/dash` for the
+built-in-only QEMU language gate. Descriptor, filesystem, fork, exec, and wait
+entry points remain explicit `ENOSYS` boundaries for D2/D3.
 
 ## Milestone D0: reproducible source and compile gate
 
@@ -37,7 +39,8 @@ built-in-only subset before descriptor and process work begins.
 - Move or re-home `libsilt` under the Silt project while keeping Neva's raw ABI
   shim separately versioned.
 - Define real `argc`, `argv`, `envp`, auxiliary startup metadata, and bounded
-  environment storage across spawn/fork/exec.
+  environment storage across spawn/fork/exec. `SYS_EXEC` now accepts a bounded
+  NUL-separated vector, preserving whitespace within arguments.
 - Implement `errno`, allocation, ctype, integer conversion, formatted I/O, and
   the string/memory surface required by dash.
 - Link dash and run built-in-only commands: `:`, `true`, `false`, `printf`,

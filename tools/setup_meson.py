@@ -55,6 +55,7 @@ def write_cross_file(build_dir: Path, compiler: Path) -> Path:
         "c": compiler,
         "ld": bin_dir / (TOOL_PREFIX + "ld"),
         "ar": bin_dir / (TOOL_PREFIX + "ar"),
+        "nm": bin_dir / (TOOL_PREFIX + "nm"),
         "strip": bin_dir / (TOOL_PREFIX + "strip"),
     }
     missing = [str(path) for path in tools.values() if not path.is_file()]

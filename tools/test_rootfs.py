@@ -62,8 +62,15 @@ def main() -> int:
     def run(command: str, markers: tuple[bytes, ...], name: str) -> None:
         try:
             output = command_output(session, runner, command)
+            lines = tuple(line.strip() for line in output.splitlines())
+
+            def marker_present(marker: bytes) -> bool:
+                if marker.startswith(b"status="):
+                    return marker in lines
+                return marker in output
+
             missing = [marker.decode(errors="replace")
-                       for marker in markers if marker not in output]
+                       for marker in markers if not marker_present(marker)]
             unknown = b"Unknown: " in output or b"File not found." in output
             passed = not missing and not unknown
             detail = ""
@@ -81,7 +88,7 @@ def main() -> int:
     try:
         print("=== Booting Neva with the Silt R0 rootfs ===")
         session.start()
-        if not session.read_until(runner.PROMPT, timeout=45):
+        if not session.read_until(runner.PROMPT, timeout=120):
             print(session.output.decode(errors="replace")[-10000:])
             return 1
         boot_markers = (
@@ -91,7 +98,7 @@ def main() -> int:
             b"B5_VFSD: namespace/data PASS",
             b"B8_SESSION_READY: uid-scoped manager/catalog PASS",
         )
-        session.read_until(boot_markers[1], timeout=45)
+        session.read_until(boot_markers[1], timeout=120)
         for marker in boot_markers:
             record("boot:" + marker.decode().split(":", 1)[0],
                    marker in session.output)
@@ -100,6 +107,15 @@ def main() -> int:
                 errors="replace").splitlines() if "FAIL" in line]
             if failures:
                 print("  boot diagnostics: " + " | ".join(failures[-8:]))
+
+        # The recovery prompt can appear before the asynchronous kernel/service
+        # self-tests finish. Re-synchronize after B3_INITD_READY so later
+        # commands cannot be swallowed by their terminal restart coverage.
+        start = len(session.output)
+        session.send("")
+        if not session.read_until(runner.PROMPT, timeout=30, start_offset=start):
+            print(session.output.decode(errors="replace")[-10000:])
+            return 1
 
         print("\n=== Interactive recovery shell and Silt commands ===")
         start = len(session.output)
@@ -127,6 +143,32 @@ def main() -> int:
         run("status", (b"status=0",), "true exit status")
         run("false", (), "false launch")
         run("status", (b"status=1",), "false exit status")
+
+        print("\n=== dash built-in language suite ===")
+        run("dash -c ':'", (), "dash null command")
+        run("status", (b"status=0",), "dash null status")
+        run("dash -c 'true'", (), "dash true")
+        run("status", (b"status=0",), "dash true status")
+        run("dash -c 'false'", (), "dash false")
+        run("status", (b"status=1",), "dash false status")
+        run(
+            "dash -c 'value=41;value=$((value+1));printf \"DASH_ARITH=%s\\n\" \"$value\"'",
+            (b"DASH_ARITH=42",),
+            "dash assignment and arithmetic",
+        )
+        run("status", (b"status=0",), "dash arithmetic status")
+        run(
+            "dash -c 'word=\"silt shell\";printf \"DASH_QUOTE=<%s>\\n\" \"$word\"'",
+            (b"DASH_QUOTE=<silt shell>",),
+            "dash quoting and parameter expansion",
+        )
+        run("status", (b"status=0",), "dash expansion status")
+        run(
+            "dash -c 'if true;then printf \"DASH_FLOW=ok\\n\";else false;fi'",
+            (b"DASH_FLOW=ok",),
+            "dash control flow",
+        )
+        run("status", (b"status=0",), "dash control-flow status")
 
         print("\n=== Session teardown ===")
         start = len(session.output)

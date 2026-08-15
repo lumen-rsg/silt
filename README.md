@@ -12,21 +12,22 @@ Neva shell (`nsh`) remains the bounded recovery and diagnostics shell.
 
 The repository currently provides:
 
-- a deterministic 8 MiB Silt root filesystem with release metadata and nine
-  capability-native diagnostic utilities;
+- a deterministic 8 MiB Silt root filesystem with release metadata, nine
+  capability-native diagnostic utilities, and `/bin/dash`;
 - an end-to-end QEMU gate that boots that exact image on Neva, drives `nsh`,
   exercises service-backed input and system information, and verifies teardown;
 - a reproducible, hash-pinned dash 0.5.13.5 source preparation step;
-- a freestanding ARM64 cross-build that compiles every dash translation unit
-  into a static port archive;
+- a freestanding ARM64 cross-build that compiles every dash translation unit,
+  links a Silt-owned libc baseline, and rejects unresolved process symbols;
 - an explicit Silt configuration that starts without line editing or job
   control while the underlying POSIX descriptor/process adapters are built;
 - architecture and implementation contracts for growing Silt without adding
   ambient authority to Neva.
 
-The archive is a compile-readiness gate, not yet a runnable shell. Linking and
-booting dash require the libc and descriptor work recorded in
-`docs/plans/dash-port.md`.
+The current D1 image runs a curated built-in-only `dash -c` suite in QEMU,
+including assignments, quoting, parameter expansion, arithmetic, and control
+flow. Files, descriptors, external commands, and pipelines remain explicit
+D2/D3 work in `docs/plans/dash-port.md`; dash is not yet installed as `/bin/sh`.
 
 ## Build Silt
 

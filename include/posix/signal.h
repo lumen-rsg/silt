@@ -1,7 +1,13 @@
 #pragma once
 
 #include <stdint.h>
+#include <sys/_sigset.h>
 #include <sys/types.h>
+
+#if !defined(_SIGSET_T_DECLARED)
+#define _SIGSET_T_DECLARED
+typedef __sigset_t sigset_t;
+#endif
 
 // Signal values are the Neva userspace ABI. Values without a specialized
 // kernel action still have the default terminate behavior.
