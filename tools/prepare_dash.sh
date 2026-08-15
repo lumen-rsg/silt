@@ -6,7 +6,7 @@ version=0.5.13.5
 archive_name=dash-${version}.tar.gz
 source_url=http://gondor.apana.org.au/~herbert/dash/files/${archive_name}
 expected_sha=40090101a2a491f13e901d3d48e90414f26634628b9bfff35ff540363c227a7d
-prepared_marker=${expected_sha}:patchset-4
+prepared_marker=${expected_sha}:patchset-5
 cache_dir=${project_root}/subprojects/packagecache
 archive=${cache_dir}/${archive_name}
 target=${project_root}/vendor/dash-${version}
@@ -42,11 +42,7 @@ trap 'test ! -d "${temporary}" || rm -r "${temporary}"' EXIT HUP INT TERM
 
 tar -xzf "${archive}" --strip-components=1 -C "${temporary}"
 patch -d "${temporary}" -p1 \
-    < "${project_root}/ports/dash/patches/0001-avoid-floating-point-in-size-bound.patch"
-patch -d "${temporary}" -p1 \
-    < "${project_root}/ports/dash/patches/0002-gate-floating-point-printf.patch"
-patch -d "${temporary}" -p1 \
-    < "${project_root}/ports/dash/patches/0003-avoid-glob-flag-redefinition.patch"
+    < "${project_root}/ports/dash/patches/0001-avoid-glob-flag-redefinition.patch"
 (
     cd "${temporary}"
     ./configure --without-libedit --disable-tee --disable-memfd-create

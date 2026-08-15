@@ -73,7 +73,6 @@ dash_c_args = [
   '-march=armv8-a',
   '-ffreestanding',
   '-nostdlib',
-  '-mgeneral-regs-only',
   '-fno-builtin',
   '-DBSD=1',
   '-DSHELL=1',

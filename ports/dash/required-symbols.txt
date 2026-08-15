@@ -71,6 +71,7 @@ strpbrk
 strsignal
 strspn
 strstr
+strtod
 strtok
 strtoll
 strtoull

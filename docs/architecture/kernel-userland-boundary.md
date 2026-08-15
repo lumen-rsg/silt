@@ -10,7 +10,8 @@ service operations. Porting POSIX software must preserve that separation.
 
 Neva owns:
 
-- scheduling, address spaces, exceptions, signals, and process lifecycle;
+- scheduling, address spaces, exceptions, signals, process lifecycle, and
+  architectural FP/Advanced SIMD context;
 - typed kernel objects, capability handles, rights attenuation, and revocation;
 - capability-backed fork, executable VMO replacement, wait events, and process
   group identities;

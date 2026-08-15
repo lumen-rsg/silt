@@ -19,7 +19,7 @@ Keep `/bin/nsh` as the recovery and diagnostics shell.
 
 As of 2026-08-15, D0 is complete. A clean, checksum-verified source
 preparation applies the ordered Silt patch set and the Arm GNU cross build
-produces `libsilt-dash-port.a` without warnings. The archive has 84 unresolved
+produces `libsilt-dash-port.a` without warnings. The archive has 85 unresolved
 external symbols, frozen in `ports/dash/required-symbols.txt`; D1 closes the
 built-in-only subset before descriptor and process work begins.
 

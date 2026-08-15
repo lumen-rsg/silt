@@ -45,7 +45,6 @@
 // after pipe/dup2/waitpid/tcsetpgrp are backed by capability-safe adapters.
 #define JOBS 0
 #define SMALL 1
-#define SILT_NO_FLOAT_PRINTF 1
 
 #define _PATH_BSHELL "/bin/sh"
 #define _PATH_DEVNULL "/dev/null"
