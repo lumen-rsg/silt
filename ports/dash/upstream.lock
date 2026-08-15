@@ -1,0 +1,6 @@
+name=dash
+version=0.5.13.5
+revision=037bbdfd330017c368caf6242f977974123239b5
+source_url=http://gondor.apana.org.au/~herbert/dash/files/dash-0.5.13.5.tar.gz
+sha256=40090101a2a491f13e901d3d48e90414f26634628b9bfff35ff540363c227a7d
+license=BSD-3-Clause

@@ -1,0 +1,16 @@
+From: Silt OS maintainers
+Subject: [PATCH] dash: calculate integer length without floating point
+
+Neva does not yet preserve an EL0 floating-point context, so all Silt base
+programs are built with -mgeneral-regs-only. Keep the existing conservative
+decimal length bound while expressing log10(2) as a scaled integer constant.
+
+--- a/src/shell.h
++++ b/src/shell.h
+@@ -100,5 +100,5 @@ static inline int max_int_length(int bytes)
+  */
+ static inline int max_int_length(int bytes)
+ {
+-	return (bytes * 8 - 1) * 0.30102999566398119521 + 14;
++	return ((bytes * 8 - 1) * 30103) / 100000 + 14;
+ }

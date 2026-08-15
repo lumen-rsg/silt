@@ -1,0 +1,8 @@
+/build*/
+/.cache/
+/vendor/dash-*/
+/subprojects/packagecache/*
+!/subprojects/packagecache/.gitkeep
+*.o
+*.a
+__pycache__/

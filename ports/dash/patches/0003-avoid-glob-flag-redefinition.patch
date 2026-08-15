@@ -1,0 +1,13 @@
+From: Silt OS maintainers
+Subject: [PATCH] dash: avoid redefining fallback glob flag
+
+Silt uses dash's internal pathname expansion rather than libc glob. The fallback
+header already defines GLOB_ALTDIRFUNC, so clear it before selecting the
+non-glibc value used by expand.c.
+
+--- a/src/expand.c
++++ b/src/expand.c
+@@ -1475,2 +1475,3 @@
+ #else
++#undef GLOB_ALTDIRFUNC
+ #define GLOB_ALTDIRFUNC 0

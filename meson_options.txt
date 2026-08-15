@@ -1,0 +1,6 @@
+option(
+  'neva_source_dir',
+  type: 'string',
+  value: '../neva-microkernel',
+  description: 'Path to the sibling Neva microkernel checkout',
+)

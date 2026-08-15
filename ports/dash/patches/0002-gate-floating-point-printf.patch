@@ -1,0 +1,23 @@
+From: Silt OS maintainers
+Subject: [PATCH] dash: gate printf floating point conversions for Silt
+
+Neva does not yet preserve an EL0 floating-point context. Keep the integer and
+string POSIX printf surface usable and fail explicitly for floating directives
+until that process ABI exists.
+
+--- a/src/bltin/printf.c
++++ b/src/bltin/printf.c
+@@ -44,0 +45 @@
++#ifndef SILT_NO_FLOAT_PRINTF
+@@ -45,0 +47 @@
++#endif
+@@ -259,0 +262,3 @@
++#ifdef SILT_NO_FLOAT_PRINTF
++				error("%s: floating point directive unavailable", start);
++#else
+@@ -262,0 +268 @@
++#endif
+@@ -536,0 +543 @@
++#ifndef SILT_NO_FLOAT_PRINTF
+@@ -555,0 +563 @@
++#endif
