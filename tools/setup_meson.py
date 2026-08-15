@@ -53,6 +53,7 @@ def write_cross_file(build_dir: Path, compiler: Path) -> Path:
     bin_dir = compiler.parent
     tools = {
         "c": compiler,
+        "ld": bin_dir / (TOOL_PREFIX + "ld"),
         "ar": bin_dir / (TOOL_PREFIX + "ar"),
         "strip": bin_dir / (TOOL_PREFIX + "strip"),
     }

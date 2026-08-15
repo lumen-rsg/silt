@@ -4,3 +4,10 @@ option(
   value: '../neva-microkernel',
   description: 'Path to the sibling Neva microkernel checkout',
 )
+
+option(
+  'neva_build_dir',
+  type: 'string',
+  value: '../neva-microkernel/build-meson',
+  description: 'Path to a configured Neva build providing the transitional userspace SDK',
+)

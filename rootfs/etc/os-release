@@ -1,0 +1,6 @@
+NAME=Silt
+PRETTY_NAME="Silt OS"
+ID=silt
+VERSION_ID=0.1.0
+KERNEL=Neva
+ARCH=aarch64

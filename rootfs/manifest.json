@@ -1,0 +1,23 @@
+{
+  "format": "nevfs-v1",
+  "size_mib": 8,
+  "applications": [
+    "echo",
+    "false",
+    "id",
+    "meminfo",
+    "ps",
+    "sysinfo",
+    "true",
+    "uname",
+    "whoami"
+  ],
+  "required_paths": [
+    "boot/etc/hello.txt",
+    "etc/group",
+    "etc/motd",
+    "etc/os-release",
+    "etc/passwd",
+    "etc/shadow"
+  ]
+}

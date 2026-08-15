@@ -12,6 +12,10 @@ Neva shell (`nsh`) remains the bounded recovery and diagnostics shell.
 
 The repository currently provides:
 
+- a deterministic 8 MiB Silt root filesystem with release metadata and nine
+  capability-native diagnostic utilities;
+- an end-to-end QEMU gate that boots that exact image on Neva, drives `nsh`,
+  exercises service-backed input and system information, and verifies teardown;
 - a reproducible, hash-pinned dash 0.5.13.5 source preparation step;
 - a freestanding ARM64 cross-build that compiles every dash translation unit
   into a static port archive;
@@ -24,7 +28,7 @@ The archive is a compile-readiness gate, not yet a runnable shell. Linking and
 booting dash require the libc and descriptor work recorded in
 `docs/plans/dash-port.md`.
 
-## Build the port gate
+## Build Silt
 
 Neva and Silt are expected to be sibling checkouts:
 
@@ -41,6 +45,29 @@ python3 tools/setup_meson.py build
 meson compile -C build
 ```
 
+The root filesystem is written to `build/silt-rootfs.img`. Boot it through the
+automated four-vCPU acceptance runner with:
+
+```sh
+meson compile -C build rootfs-qemu-test
+```
+
+For an interactive Silt session, use the launcher. It configures and compiles
+both sibling projects, boots clean writable copies of every disk image, and
+leaves the build artifacts untouched:
+
+```sh
+python3 tools/run_silt.py
+```
+
+Useful variants include `--smp 1`, `--gui`, `--debug`, and `--dry-run`. Once
+both projects are built, `--skip-build` starts immediately. The equivalent
+Meson shortcut is:
+
+```sh
+meson compile -C build run
+```
+
 `tools/setup_meson.py` downloads the official dash release tarball, verifies
 its SHA-256 digest, generates dash's derived sources with the host compiler,
 and configures the freestanding ARM64 build. Network access is only needed
@@ -50,12 +77,14 @@ when the pinned tarball is absent from `subprojects/packagecache/`.
 
 ```text
 docs/          Architecture contracts and executable port plans
+apps/          Capability-native bootstrap utilities
 include/       Public Silt userspace headers
 libc/          Silt libc and POSIX personality implementation
 ports/         Third-party port configuration and patches
 services/      Supervised EL0 operating-system services
 shells/        Native and ported shells
-system/        System manifests and filesystem-image assembly
+rootfs/        Root filesystem manifest and static staged files
+system/        System policy and future service manifests
 tests/         Host, ABI, and QEMU integration tests
 tools/         Reproducible setup and source-preparation helpers
 vendor/        Ignored, reproducibly prepared third-party source trees

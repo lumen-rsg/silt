@@ -11,11 +11,16 @@ project(
 )
 
 fs = import('fs')
-cc = meson.get_compiler('c')
+python = find_program('python3')
+cross_cc = find_program('aarch64-none-elf-gcc')
+cross_ld = find_program('aarch64-none-elf-ld')
 source_root = meson.current_source_dir()
 dash_root = source_root / 'vendor/dash-0.5.13.5'
 dash_src = dash_root / 'src'
 neva_source_dir = get_option('neva_source_dir')
+neva_build_dir = get_option('neva_build_dir')
+neva_source_root = source_root / neva_source_dir
+neva_build_root = source_root / neva_build_dir
 
 if not fs.is_dir(dash_src) or not fs.is_file(dash_src / 'builtins.c')
   error(
@@ -26,6 +31,16 @@ endif
 if not fs.is_dir(neva_source_dir)
   warning('Neva source checkout not found at ' + neva_source_dir)
 endif
+
+neva_crt0 = neva_build_root / 'apps/crt0.o'
+neva_libneva = neva_build_root / 'apps/libneva.a'
+neva_user_linker = neva_source_root / 'apps/user.ld'
+neva_formatter = neva_source_root / 'tools/mknevfs.py'
+foreach required : [neva_crt0, neva_libneva, neva_user_linker, neva_formatter]
+  if not fs.is_file(required)
+    error('required Neva SDK artifact is missing: ' + required)
+  endif
+endforeach
 
 dash_sources = files(
   'vendor/dash-0.5.13.5/src/alias.c',
@@ -99,6 +114,127 @@ test(
   ],
 )
 
+silt_app_names = [
+  'echo',
+  'false',
+  'id',
+  'meminfo',
+  'ps',
+  'sysinfo',
+  'true',
+  'uname',
+  'whoami',
+]
+silt_app_c_args = [
+  '-march=armv8-a',
+  '-ffreestanding',
+  '-nostdlib',
+  '-Os',
+  '-Wall',
+  '-Wextra',
+  '-Wpedantic',
+  '-Werror',
+  '-std=c2x',
+  '-fstack-protector-strong',
+  '-ffile-prefix-map=' + source_root + '=.',
+  '-fdebug-prefix-map=' + source_root + '=.',
+  '-I' + source_root / 'apps',
+  '-I' + neva_source_root / 'apps',
+  '-I' + neva_source_root / 'ports',
+  '-I' + neva_source_root / 'services/initd/include',
+]
+silt_app_link_args = [
+  '-z', 'max-page-size=4096',
+  '-T', neva_user_linker,
+  '--gc-sections',
+  '-nostdlib',
+  '-static',
+]
+
+silt_app_targets = {}
+foreach app_name : silt_app_names
+  app_extra_link_args = []
+  if app_name == 'true'
+    app_extra_link_args = ['--undefined=pager_exec_probe']
+  endif
+  app_object = custom_target(
+    'silt-' + app_name + '-object',
+    input: 'apps/' + app_name + '.c',
+    output: 'silt_' + app_name + '.o',
+    depfile: 'silt_' + app_name + '.o.d',
+    command: [
+      cross_cc,
+    ] + silt_app_c_args + [
+      '-MMD', '-MQ', '@OUTPUT@', '-MF', '@DEPFILE@',
+      '-c', '@INPUT@', '-o', '@OUTPUT@',
+    ],
+  )
+  app_target = custom_target(
+    'silt-' + app_name + '-app',
+    input: app_object,
+    output: app_name + '.elf',
+    command: [cross_ld] + silt_app_link_args + app_extra_link_args + [
+      neva_crt0, '@INPUT@', neva_libneva, '-o', '@OUTPUT@',
+    ],
+  )
+  silt_app_targets += {app_name: app_target}
+endforeach
+
+rootfs_manifest = files('rootfs/manifest.json')
+rootfs_sources = files(
+  'rootfs/etc/motd',
+  'rootfs/etc/os-release',
+)
+rootfs_command = [
+  python,
+  files('tools/build_rootfs.py'),
+  '--formatter', neva_formatter,
+  '--manifest', rootfs_manifest,
+  '--staging', source_root / 'rootfs',
+  '--output', '@OUTPUT@',
+]
+rootfs_dependencies = []
+foreach app_name : silt_app_names
+  rootfs_command += ['--app', app_name, silt_app_targets[app_name]]
+  rootfs_dependencies += silt_app_targets[app_name]
+endforeach
+
+silt_rootfs = custom_target(
+  'silt-rootfs',
+  input: rootfs_sources,
+  output: 'silt-rootfs.img',
+  command: rootfs_command,
+  depends: rootfs_dependencies,
+  build_by_default: true,
+)
+
+run_target(
+  'rootfs-qemu-test',
+  command: [
+    python,
+    files('tools/test_rootfs.py'),
+    '--neva-source', neva_source_root,
+    '--neva-build', neva_build_root,
+    '--rootfs', silt_rootfs,
+    '--smp', '4',
+  ],
+  depends: silt_rootfs,
+)
+
+run_target(
+  'run',
+  command: [
+    python,
+    files('tools/run_silt.py'),
+    '--neva-source', neva_source_root,
+    '--neva-build', neva_build_root,
+    '--silt-build', meson.current_build_dir(),
+    '--skip-build',
+    '--console-tty',
+  ],
+  depends: silt_rootfs,
+)
+
 summary(
   {
     'dash version': '0.5.13.5',
@@ -106,6 +242,8 @@ summary(
     'job control': 'disabled until the Silt POSIX adapter is ready',
     'line editing': 'disabled (dash SMALL configuration)',
     'Neva source': neva_source_dir,
+    'Neva build': neva_build_dir,
+    'rootfs image': meson.current_build_dir() / 'silt-rootfs.img',
   },
   section: 'Silt port status',
 )
