@@ -17,7 +17,7 @@ __asm__(
     ".popsection\n"
 );
 
-void main(void) {
+int main(void) {
     uint64_t low;
     uint64_t high;
     uint64_t fpcr;
@@ -30,5 +30,5 @@ void main(void) {
         : "=r"(low), "=r"(high), "=r"(fpcr), "=r"(fpsr)
     );
     g_silt_true_fp_state = low | high | fpcr | fpsr;
-    sys_exit(g_silt_true_fp_state == 0 ? 0 : 125);
+    return g_silt_true_fp_state == 0 ? 0 : 125;
 }

@@ -1,0 +1,17 @@
+--- a/src/eval.c
++++ b/src/eval.c
+@@ -38,0 +39 @@
++#include "silt_pipeline.h"
+@@ -582,0 +584 @@
++	silt_pipeline_begin();
+@@ -588,0 +591 @@
++				silt_pipeline_abort();
+@@ -613,0 +617 @@
++	silt_pipeline_end();
+--- a/src/jobs.c
++++ b/src/jobs.c
+@@ -49,0 +50 @@
++#include "silt_pipeline.h"
+@@ -982,0 +984,2 @@
++	if (pid < 0)
++		silt_pipeline_abort();

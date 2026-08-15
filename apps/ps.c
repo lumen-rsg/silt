@@ -9,7 +9,7 @@ typedef struct {
     uint32_t reserved;
 } SiltProcessInfo;
 
-void main(void) {
+int main(void) {
     uint32_t system = silt_startup_handle("system", NEVA_OBJECT_SYSTEM);
     SiltProcessInfo entries[32];
     int count = system ? (int)sys_rpc(
@@ -17,7 +17,7 @@ void main(void) {
         (uint64_t)(uintptr_t)entries, sizeof(entries)) : -1;
     if (count < 0 || count > 32) {
         neva_println("ps: process inspection unavailable");
-        sys_exit(1);
+        return 1;
     }
     static const char* states[] = {
         "ready", "running", "blocked", "dying", "zombie", "reapable",
@@ -33,5 +33,5 @@ void main(void) {
         neva_println(entries[index].state < 6
             ? states[entries[index].state] : "unknown");
     }
-    sys_exit(0);
+    return 0;
 }

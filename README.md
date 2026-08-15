@@ -24,11 +24,12 @@ The repository currently provides:
 - architecture and implementation contracts for growing Silt without adding
   ambient authority to Neva.
 
-The current D2 image runs a curated dash suite in QEMU, including shell-language
-built-ins, scripts, scoped filesystem lookup, globbing, `cd`, `test`, private
-temporary-file redirection, `/dev/null`, and the explicitly granted TTY.
-External commands, pipelines, and fork/exec descriptor handoff remain D3 work;
-dash is not yet installed as `/bin/sh`.
+The current D3 image runs a curated dash suite in QEMU, including shell-language
+built-ins, scripts, scoped filesystem lookup, external commands, subshells,
+command substitution, redirection, environment/descriptor handoff across
+`execve`, and multi-stage pipelines. Pipeline stages are attached to one
+capability-backed ProcessGroup before they resume. Interactive job control
+remains D4 work; dash is not yet installed as `/bin/sh`.
 
 ## Build Silt
 

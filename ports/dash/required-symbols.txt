@@ -58,6 +58,9 @@ sigfillset
 signal
 sigprocmask
 sigsuspend
+silt_pipeline_abort
+silt_pipeline_begin
+silt_pipeline_end
 stat
 stpncpy
 strcasecmp

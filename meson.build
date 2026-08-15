@@ -111,8 +111,11 @@ silt_libc_sources = files(
   'libc/descriptors.c',
   'libc/format.c',
   'libc/memory.c',
+  'libc/process.c',
   'libc/runtime.c',
   'libc/setjmp.S',
+  'libc/startup.c',
+  'libc/crt0.S',
 )
 silt_libc_includes = include_directories(
   'include/posix',
@@ -192,7 +195,6 @@ dash_app = custom_target(
   'silt-dash-app',
   output: 'dash.elf',
   command: [cross_ld] + silt_app_link_args + [
-    neva_crt0,
     '--start-group', dash_port_archive, silt_libc, neva_libneva, '--end-group',
     '-o', '@OUTPUT@',
   ],
@@ -208,8 +210,14 @@ test(
 silt_app_targets = {}
 foreach app_name : silt_app_names
   app_extra_link_args = []
+  app_link_inputs = [
+    '@INPUT@', '--start-group', silt_libc, neva_libneva, '--end-group',
+  ]
   if app_name == 'true'
     app_extra_link_args = ['--undefined=pager_exec_probe']
+    # /bin/true is also Neva's bounded two-page PagerFile execution fixture.
+    # Keep that dedicated probe image minimal; it does not use descriptors.
+    app_link_inputs = [neva_crt0, '@INPUT@', neva_libneva]
   endif
   app_object = custom_target(
     'silt-' + app_name + '-object',
@@ -227,9 +235,8 @@ foreach app_name : silt_app_names
     'silt-' + app_name + '-app',
     input: app_object,
     output: app_name + '.elf',
-    command: [cross_ld] + silt_app_link_args + app_extra_link_args + [
-      neva_crt0, '@INPUT@', neva_libneva, '-o', '@OUTPUT@',
-    ],
+    command: [cross_ld] + silt_app_link_args + app_extra_link_args
+      + app_link_inputs + ['-o', '@OUTPUT@'],
   )
   silt_app_targets += {app_name: app_target}
 endforeach
@@ -295,7 +302,7 @@ run_target(
 summary(
   {
     'dash version': '0.5.13.5',
-    'dash mode': 'D2 descriptor/filesystem image',
+    'dash mode': 'D3 execution/pipeline image',
     'job control': 'disabled until the Silt POSIX adapter is ready',
     'line editing': 'disabled (dash SMALL configuration)',
     'Neva source': neva_source_dir,

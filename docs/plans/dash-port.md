@@ -17,13 +17,13 @@ Keep `/bin/nsh` as the recovery and diagnostics shell.
 
 ## Status
 
-As of 2026-08-16, D0 through D2 filesystem acceptance are complete. A clean,
+As of 2026-08-16, D0 through D3 acceptance are complete. A clean,
 checksum-verified source preparation applies the ordered Silt patch set. The
 Arm GNU cross build produces the source-readiness archive and links it with a
 Silt-owned libc baseline into `dash.elf`; a separate audit rejects unresolved
-symbols in the process image. The image is installed as `/bin/dash` for the
-built-in and filesystem QEMU gate. Fork, exec, wait, and pipe entry points remain
-explicit `ENOSYS` boundaries for D3.
+symbols in the process image. The image is installed as `/bin/dash` for the D3
+QEMU gate. Fork, exec, wait, pipe, and pipeline-group entry points are
+implemented by the Silt personality over capability-selected Neva operations.
 
 ## Milestone D0: reproducible source and compile gate
 
@@ -80,6 +80,12 @@ ceiling at 1, 4, and 8 vCPUs.
 
 Acceptance: external commands, subshells, `&&`, `||`, command substitution,
 redirection, and multi-stage pipelines pass at 1, 4, and 8 vCPUs.
+
+Evidence: the rootfs QEMU gate covers external executable-VMO replacement,
+environment and descriptor reconstruction, built-in and external pipe stages,
+command substitution, file redirection across exec, and pipeline status. Neva
+starts Silt forks suspended; sessiond creates or joins the caller-selected job
+group before Silt resumes any stage.
 
 ## Milestone D4: signals and interactive job control
 

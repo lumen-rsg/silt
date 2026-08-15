@@ -6,7 +6,7 @@ version=0.5.13.5
 archive_name=dash-${version}.tar.gz
 source_url=http://gondor.apana.org.au/~herbert/dash/files/${archive_name}
 expected_sha=40090101a2a491f13e901d3d48e90414f26634628b9bfff35ff540363c227a7d
-prepared_marker=${expected_sha}:patchset-5
+prepared_marker=${expected_sha}:patchset-6
 cache_dir=${project_root}/subprojects/packagecache
 archive=${cache_dir}/${archive_name}
 target=${project_root}/vendor/dash-${version}
@@ -43,10 +43,13 @@ trap 'test ! -d "${temporary}" || rm -r "${temporary}"' EXIT HUP INT TERM
 tar -xzf "${archive}" --strip-components=1 -C "${temporary}"
 patch -d "${temporary}" -p1 \
     < "${project_root}/ports/dash/patches/0001-avoid-glob-flag-redefinition.patch"
+patch -d "${temporary}" -p1 \
+    < "${project_root}/ports/dash/patches/0002-bracket-silt-pipelines.patch"
 (
     cd "${temporary}"
     ./configure --without-libedit --disable-tee --disable-memfd-create
-    make -j4
+    cp "${project_root}/include/posix/silt_pipeline.h" src/silt_pipeline.h
+    make CPPFLAGS="-DSILT_PIPELINE_PREPARE_HOST" -j4
     cc -E -x c \
         -include "${project_root}/ports/dash/config.silt.h" \
         -o src/builtins.def src/builtins.def.in

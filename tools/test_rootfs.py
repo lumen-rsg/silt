@@ -8,13 +8,34 @@ from pathlib import Path
 import sys
 
 
-def command_output(session, runner, command: str, timeout: int = 30) -> bytes:
+def command_output(
+    session, runner, command: str, markers: tuple[bytes, ...], timeout: int = 30,
+) -> bytes:
     start = len(session.output)
     session.send(command)
     if not session.read_until(runner.PROMPT, timeout=timeout, start_offset=start):
-        raise TimeoutError(f"prompt did not return after {command!r}")
-    lines = session.output[start:].replace(b"\r", b"").split(b"\n")
+        tail = session.output[start:].decode(errors="replace")[-2000:]
+        raise TimeoutError(
+            f"prompt did not return after {command!r}; output={tail!r}"
+        )
+    # nsh writes its prompt directly while Silt applications write through
+    # ttyd, so the prompt can overtake the final service-backed output bytes.
+    # Wait for declared output after the prompt as well as before it.
     command_bytes = command.encode()
+    command_position = session.output.find(command_bytes, start)
+    marker_offset = command_position + len(command_bytes) \
+        if command_position >= 0 else start
+    for marker in markers:
+        if marker not in session.output[marker_offset:] and not session.read_until(
+            marker, timeout=timeout, start_offset=marker_offset,
+        ):
+            tail = session.output[marker_offset:].decode(errors="replace")[-2000:]
+            raise TimeoutError(
+                f"missing output {marker!r} after {command!r}; output={tail!r}"
+            )
+    output = session.output[start:].replace(b"\r", b"")
+    output = output.replace(runner.PROMPT, b"")
+    lines = output.split(b"\n")
     for index, line in enumerate(lines):
         if line.strip() == command_bytes:
             del lines[index]
@@ -61,7 +82,7 @@ def main() -> int:
 
     def run(command: str, markers: tuple[bytes, ...], name: str) -> None:
         try:
-            output = command_output(session, runner, command)
+            output = command_output(session, runner, command, markers)
             lines = tuple(line.strip() for line in output.splitlines())
 
             def marker_present(marker: bytes) -> bool:
@@ -213,6 +234,77 @@ def main() -> int:
             "dash directory grant data ceiling",
         )
         run("status", (b"status=0",), "dash shadow denial status")
+
+        print("\n=== dash process execution suite ===")
+        run(
+            "dash -c 'uname -a'",
+            (b"Silt neva 0.1.0 aarch64",),
+            "dash external command",
+        )
+        run("status", (b"status=0",), "dash external command status")
+        run(
+            "dash -c '(printf \"DASH_SUBSHELL=ok\\n\")'",
+            (b"DASH_SUBSHELL=ok",),
+            "dash forked subshell",
+        )
+        run("status", (b"status=0",), "dash subshell status")
+        run(
+            "dash -c 'uname >/dev/null && printf \"DASH_AND=ok\\n\"'",
+            (b"DASH_AND=ok",),
+            "dash external command and conditional",
+        )
+        run("status", (b"status=0",), "dash conditional status")
+        run(
+            "dash -c 'missing-silt-command 2>/dev/null || printf \"DASH_OR=ok\\n\"'",
+            (b"DASH_OR=ok",),
+            "dash exec failure and fallback",
+        )
+        run("status", (b"status=0",), "dash exec failure status")
+
+        print("\n=== dash pipeline suite ===")
+        run(
+            "dash -c 'printf \"DASH_PIPE=ok\\n\" | "
+            "{ IFS= read -r line; printf \"%s\\n\" \"$line\"; }'",
+            (b"DASH_PIPE=ok",),
+            "dash builtin pipeline",
+        )
+        run("status", (b"status=0",), "dash builtin pipeline status")
+        run(
+            "dash -c 'printf \"DASH_MULTI=ok\\n\" | "
+            "{ IFS= read -r line; printf \"%s\\n\" \"$line\"; } | "
+            "{ IFS= read -r line; printf \"%s\\n\" \"$line\"; }'",
+            (b"DASH_MULTI=ok",),
+            "dash multi-stage pipeline",
+        )
+        run("status", (b"status=0",), "dash multi-stage pipeline status")
+        run(
+            "dash -c 'value=$(printf \"DASH_SUBSTITUTE=ok\"); "
+            "printf \"%s\\n\" \"$value\"'",
+            (b"DASH_SUBSTITUTE=ok",),
+            "dash command substitution",
+        )
+        run("status", (b"status=0",), "dash command substitution status")
+        run(
+            "dash -c 'echo DASH_EXTERNAL_PIPE=ok | "
+            "{ IFS= read -r line; printf \"%s\\n\" \"$line\"; }'",
+            (b"DASH_EXTERNAL_PIPE=ok",),
+            "dash external producer pipeline",
+        )
+        run("status", (b"status=0",), "dash external pipeline status")
+        run(
+            "dash -c 'echo DASH_EXTERNAL_REDIR=ok >/tmp/dash.out; "
+            "IFS= read -r line </tmp/dash.out; printf \"%s\\n\" \"$line\"'",
+            (b"DASH_EXTERNAL_REDIR=ok",),
+            "dash external descriptor handoff",
+        )
+        run("status", (b"status=0",), "dash external redirection status")
+        run(
+            "dash -c 'DASH_ENV=ok; export DASH_ENV; dash -c "
+            "\"printf \\\"DASH_ENV=%s\\\\n\\\" \\\"\\$DASH_ENV\\\"\"'",
+            (b"DASH_ENV=ok",),
+            "dash environment handoff",
+        )
+        run("status", (b"status=0",), "dash environment handoff status")
 
         print("\n=== Session teardown ===")
         start = len(session.output)

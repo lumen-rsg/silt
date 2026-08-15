@@ -1,4 +1,5 @@
 #include "libneva.h"
+#include "silt_internal.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -27,20 +28,39 @@ char** environ = g_environment;
 static sigset_t g_signal_mask;
 static mode_t g_umask = 022;
 
+void silt_environment_exec_restore(const SiltExecInfoV1* info) {
+    for (size_t index = 0; index <= SILT_ENVIRONMENT_MAX; index++) {
+        g_environment[index] = NULL;
+    }
+    if (!info || info->environment_count > SILT_ENVIRONMENT_MAX
+        || info->string_bytes > SILT_EXEC_STRING_BYTES) {
+        return;
+    }
+    for (uint16_t index = 0; index < info->environment_count; index++) {
+        uint16_t offset = info->environment[index].offset;
+        uint16_t length = info->environment[index].length;
+        if (offset > info->string_bytes || length >= info->string_bytes - offset
+            || info->strings[offset + length] != '\0') {
+            for (size_t clear = 0; clear <= SILT_ENVIRONMENT_MAX; clear++) {
+                g_environment[clear] = NULL;
+            }
+            return;
+        }
+        g_environment[index] = (char*)&info->strings[offset];
+    }
+}
+
 int* __errno(void) {
     return &g_errno;
 }
 
 void _exit(int status) {
+    silt_descriptors_process_exit();
     sys_exit(status);
 }
 
 pid_t getpid(void) {
     return (pid_t)sys_getpid();
-}
-
-pid_t getppid(void) {
-    return 0;
 }
 
 uid_t getuid(void) {
@@ -200,16 +220,6 @@ int sigsuspend(const sigset_t* mask) {
     return -1;
 }
 
-int kill(pid_t process, int signal_number) {
-    if (process <= 0) {
-        errno = ENOSYS;
-        return -1;
-    }
-    int status = sys_kill((uint32_t)process, signal_number);
-    if (status < 0) errno = ESRCH;
-    return status;
-}
-
 int raise(int signal_number) {
     return kill(getpid(), signal_number);
 }
@@ -246,38 +256,6 @@ mode_t umask(mode_t mask) {
     mode_t previous = g_umask;
     g_umask = mask & 0777;
     return previous;
-}
-
-int pipe(int descriptors[2]) {
-    (void)descriptors;
-    errno = ENOSYS;
-    return -1;
-}
-
-pid_t fork(void) {
-    errno = ENOSYS;
-    return -1;
-}
-
-pid_t vfork(void) {
-    errno = ENOSYS;
-    return -1;
-}
-
-int execve(const char* path, char* const arguments[], char* const environment[]) {
-    (void)path;
-    (void)arguments;
-    (void)environment;
-    errno = ENOSYS;
-    return -1;
-}
-
-pid_t wait3(int* status, int options, struct rusage* usage) {
-    (void)status;
-    (void)options;
-    (void)usage;
-    errno = ECHILD;
-    return -1;
 }
 
 int tcgetattr(int descriptor, struct termios* attributes) {
