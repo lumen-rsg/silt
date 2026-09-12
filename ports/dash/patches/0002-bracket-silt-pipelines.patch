@@ -12,6 +12,16 @@
 +++ b/src/jobs.c
 @@ -49,0 +50 @@
 +#include "silt_pipeline.h"
-@@ -982,0 +984,2 @@
+@@ -981,0 +983,2 @@
++	silt_job_prepare(jp && jp->jobctl && mode != FORK_NOJOB ? 0 : -1,
++		mode == FORK_FG);
+@@ -982,0 +986,2 @@
 +	if (pid < 0)
 +		silt_pipeline_abort();
+@@ -986,0 +992,2 @@
++	if (pid > 0)
++		silt_job_finish(pid);
+@@ -1001,0 +1009 @@
++	silt_job_prepare(jp->jobctl ? 0 : -1, 1);
+@@ -1011,0 +1020 @@
++	silt_job_finish(pid);

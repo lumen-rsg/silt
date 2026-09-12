@@ -20,16 +20,39 @@ typedef struct {
     pid_t pid;
     uint32_t process;
     uint8_t suspended;
-    uint8_t pipe_readers;
-    uint8_t pipe_writers;
+    pid_t pgid;
+    uint32_t group;
 } SiltChild;
 
 static SiltChild g_children[SILT_CHILD_MAX];
 static uint32_t g_pipeline_group;
 static pid_t g_pipeline_leader;
 static int g_pipeline_active;
+static int g_job_enabled;
+static int g_job_foreground;
 
 static void child_remove(int index);
+static int child_index(pid_t pid);
+
+void silt_job_prepare(int group, int foreground) {
+    g_job_enabled = group >= 0;
+    g_job_foreground = foreground;
+}
+
+void silt_job_finish(int pid) {
+    int index = child_index(pid);
+    if (index < 0) return;
+    if (g_job_enabled && g_job_foreground && g_children[index].group) {
+        if (silt_tty_set_foreground(neva_tty_handle(), g_children[index].group)
+            != NEVA_STATUS_OK) {
+            silt_pipeline_abort();
+            g_job_enabled = 0;
+            return;
+        }
+    }
+    if (!g_pipeline_active) silt_pipeline_end();
+    g_job_enabled = 0;
+}
 
 static uint32_t session_remote(void) {
     NevaStartupHandleV1 record;
@@ -46,10 +69,6 @@ void silt_pipeline_begin(void) {
 static void child_discard_suspended(int index) {
     SiltChild* child = &g_children[index];
     if (!child->process || !child->suspended) return;
-    silt_descriptors_fork_discard(
-        child->pipe_readers, child->pipe_writers);
-    child->pipe_readers = 0;
-    child->pipe_writers = 0;
     (void)sys_rpc(child->process, PROCESS_RPC_TERMINATE, 127, 0);
     NevaWaitResult waited = sys_wait_capability(
         child->process, WAIT_REPORT_EXITED, NEVA_DEADLINE_INFINITE);
@@ -64,12 +83,7 @@ void silt_pipeline_end(void) {
         if ((NevaStatus)(int64_t)sys_rpc(
                 g_children[index].process, PROCESS_RPC_RESUME, 0, 0)
             == NEVA_STATUS_OK) {
-            silt_descriptors_fork_commit(
-                g_children[index].pipe_readers,
-                g_children[index].pipe_writers);
             g_children[index].suspended = 0;
-            g_children[index].pipe_readers = 0;
-            g_children[index].pipe_writers = 0;
         } else {
             child_discard_suspended(index);
         }
@@ -94,12 +108,14 @@ static void children_clear_in_child(void) {
         if (g_children[index].process) {
             (void)sys_handle_close(g_children[index].process);
         }
+        if (g_children[index].group) (void)sys_handle_close(g_children[index].group);
         g_children[index] = (SiltChild){ 0 };
     }
     if (g_pipeline_group) (void)sys_handle_close(g_pipeline_group);
     g_pipeline_group = NEVA_INVALID_HANDLE;
     g_pipeline_leader = 0;
     g_pipeline_active = 0;
+    g_job_enabled = 0;
 }
 
 static int pipeline_attach(uint32_t process, pid_t pid) {
@@ -128,16 +144,19 @@ static int pipeline_attach(uint32_t process, pid_t pid) {
     return 0;
 }
 
-static int child_insert(pid_t pid, uint32_t process, int suspended,
-                        uint8_t pipe_readers, uint8_t pipe_writers) {
+static int child_insert(pid_t pid, uint32_t process, int suspended) {
     for (int index = 0; index < SILT_CHILD_MAX; index++) {
         if (g_children[index].pid != 0) continue;
+        uint32_t retained_group = g_pipeline_group ? sys_handle_dup(g_pipeline_group,
+            HANDLE_RIGHT_RPC | HANDLE_RIGHT_INSPECT | HANDLE_RIGHT_SIGNAL
+                | HANDLE_RIGHT_TRANSFER) : 0;
+        if (g_pipeline_group && !retained_group) return -1;
         g_children[index] = (SiltChild){
             .pid = pid,
             .process = process,
             .suspended = (uint8_t)suspended,
-            .pipe_readers = pipe_readers,
-            .pipe_writers = pipe_writers,
+            .pgid = g_pipeline_leader,
+            .group = retained_group,
         };
         return 0;
     }
@@ -156,37 +175,27 @@ static void child_remove(int index) {
     if (g_children[index].process) {
         (void)sys_handle_close(g_children[index].process);
     }
+    if (g_children[index].group) (void)sys_handle_close(g_children[index].group);
     g_children[index] = (SiltChild){ 0 };
 }
 
 pid_t fork(void) {
-    if (silt_descriptors_fork_prepare() < 0) {
-        errno = EAGAIN;
-        return -1;
-    }
-    uint8_t inherited_readers = 0;
-    uint8_t inherited_writers = 0;
-    silt_descriptors_fork_inheritance(
-        &inherited_readers, &inherited_writers);
     NevaForkResult result = sys_fork_capability_flags(
         NEVA_FORK_START_SUSPENDED);
     if (result.child_pid == 0) {
-        if (silt_descriptors_fork_child() < 0) _exit(127);
         children_clear_in_child();
         return 0;
     }
     if (result.child_pid < 0 || !result.child_process_handle) {
-        silt_descriptors_fork_rollback();
         if (result.child_process_handle) {
             (void)sys_handle_close(result.child_process_handle);
         }
         errno = EAGAIN;
         return -1;
     }
-    if (g_pipeline_active
+    if ((g_pipeline_active || g_job_enabled)
         && pipeline_attach(
                result.child_process_handle, (pid_t)result.child_pid) < 0) {
-        silt_descriptors_fork_rollback();
         (void)sys_rpc(
             result.child_process_handle, PROCESS_RPC_TERMINATE, 127, 0);
         NevaWaitResult waited = sys_wait_capability(
@@ -199,10 +208,7 @@ pid_t fork(void) {
     }
     if (result.child_pid > INT32_MAX
         || child_insert((pid_t)result.child_pid,
-                        result.child_process_handle, g_pipeline_active,
-                        g_pipeline_active ? inherited_readers : 0,
-                        g_pipeline_active ? inherited_writers : 0) < 0) {
-        silt_descriptors_fork_rollback();
+                        result.child_process_handle, g_pipeline_active || g_job_enabled) < 0) {
         (void)sys_rpc(result.child_process_handle, PROCESS_RPC_TERMINATE, 127, 0);
         NevaWaitResult waited = sys_wait_capability(
             result.child_process_handle, WAIT_REPORT_EXITED,
@@ -212,7 +218,7 @@ pid_t fork(void) {
         errno = EAGAIN;
         return -1;
     }
-    if (!g_pipeline_active
+    if (!g_pipeline_active && !g_job_enabled
         && (NevaStatus)(int64_t)sys_rpc(
             result.child_process_handle, PROCESS_RPC_RESUME, 0, 0)
         != NEVA_STATUS_OK) {
@@ -224,12 +230,8 @@ pid_t fork(void) {
             NEVA_DEADLINE_INFINITE);
         (void)waited;
         if (index >= 0) child_remove(index);
-        silt_descriptors_fork_rollback();
         errno = EAGAIN;
         return -1;
-    }
-    if (!g_pipeline_active) {
-        silt_descriptors_fork_commit(inherited_readers, inherited_writers);
     }
     return (pid_t)result.child_pid;
 }
@@ -274,7 +276,7 @@ int execve(const char* path, char* const arguments[], char* const environment[])
     }
     uint32_t executable = silt_resolve_executable(path);
     if (!executable) return -1;
-    SiltExecInfoV1 info;
+    SiltExecInfoV2 info;
     memset(&info, 0, sizeof(info));
     info.magic = SILT_EXEC_INFO_MAGIC;
     info.version = SILT_EXEC_INFO_VERSION;
@@ -287,7 +289,7 @@ int execve(const char* path, char* const arguments[], char* const environment[])
                 return -1;
             }
             size_t length = strlen(environment[info.environment_count]);
-            SiltExecStringV1* entry =
+            SiltExecStringV2* entry =
                 &info.environment[info.environment_count];
             if (length > UINT16_MAX
                 || silt_exec_string_append(
@@ -319,6 +321,7 @@ static int wait_status(const NevaWaitResult* result) {
         return ((result->exit_status & 0xff) << 8) | 0x7f;
     }
     if (result->kind == WAIT_KIND_CONTINUED) return 0xffff;
+    if (result->termination_signal) return (int)result->termination_signal & 0x7f;
     return (result->exit_status & 0xff) << 8;
 }
 
@@ -332,7 +335,8 @@ static pid_t wait_child(int index, int* status, int options) {
     if (result.status == NEVA_STATUS_WOULD_BLOCK
         || result.status == NEVA_STATUS_TIMED_OUT) return 0;
     if (result.status != NEVA_STATUS_OK) {
-        errno = result.status == NEVA_STATUS_NO_CHILD ? ECHILD : EIO;
+        errno = result.status == NEVA_STATUS_NO_CHILD ? ECHILD
+            : result.status == NEVA_STATUS_INTERRUPTED ? EINTR : EIO;
         return -1;
     }
     pid_t pid = (pid_t)result.child_pid;
@@ -367,11 +371,17 @@ pid_t waitpid(pid_t process, int* status, int options) {
         return -1;
     }
     if (options & WNOHANG) return 0;
-    for (int index = 0; index < SILT_CHILD_MAX; index++) {
-        if (g_children[index].pid != 0) return wait_child(index, status, options);
+    // The zero selector is confined by Neva to the caller's direct children.
+    // Blocking on one arbitrary child would hide another job's stop or exit.
+    NevaWaitResult result = sys_wait_raw(0, WAIT_REPORT_EXITED
+        | ((options & WUNTRACED) ? WAIT_REPORT_STOPPED : 0), NEVA_DEADLINE_INFINITE);
+    if (result.status != NEVA_STATUS_OK) {
+        errno = result.status == NEVA_STATUS_INTERRUPTED ? EINTR : ECHILD;
+        return -1;
     }
-    errno = ECHILD;
-    return -1;
+    if (status) *status = wait_status(&result);
+    if (result.kind == WAIT_KIND_EXITED) child_remove(child_index((pid_t)result.child_pid));
+    return (pid_t)result.child_pid;
 }
 
 pid_t wait(int* status) {
@@ -384,6 +394,9 @@ pid_t wait3(int* status, int options, struct rusage* usage) {
 }
 
 int kill(pid_t process, int signal_number) {
+    if (process <= 0 && process != -1 && process != INT32_MIN) {
+        return killpg(-process, signal_number);
+    }
     if (signal_number < 0 || signal_number >= NSIG || process <= 0) {
         errno = process <= 0 ? ENOSYS : EINVAL;
         return -1;
@@ -427,4 +440,82 @@ pid_t getppid(void) {
         return 0;
     }
     return (pid_t)info.parent_process_id;
+}
+
+// Only called while the guarded wrapper has blocked signal delivery.
+static uint32_t silt_group_acquire(int process_group) {
+    for (int index = 0; index < SILT_CHILD_MAX; index++) {
+        if (process_group > 0 && g_children[index].pgid == process_group
+            && g_children[index].group) {
+            return sys_handle_dup(g_children[index].group,
+                HANDLE_RIGHT_RPC | HANDLE_RIGHT_INSPECT | HANDLE_RIGHT_SIGNAL
+                    | HANDLE_RIGHT_TRANSFER);
+        }
+    }
+    uint32_t remote = session_remote();
+    NevaServiceResult result = sys_service_call(remote,
+        SESSION_CONTROL_RPC_DUP_OWN_GROUP, 0, 0, 0, 0, NEVA_DEADLINE_INFINITE);
+    if (result.status != NEVA_STATUS_OK || !result.handle) return 0;
+    NevaProcessGroupInfoV1 info;
+    if ((NevaStatus)(int64_t)sys_rpc(result.handle, PROCESS_GROUP_RPC_QUERY,
+            (uint64_t)(uintptr_t)&info, sizeof(info)) != NEVA_STATUS_OK
+        || (process_group > 0 && info.leader_process_id != (uint32_t)process_group)) {
+        (void)sys_handle_close(result.handle);
+        return 0;
+    }
+    return result.handle;
+}
+
+uint32_t silt_group_acquire_guarded(SiltCleanup* cleanup, int process_group) {
+    uint32_t mask = silt_cleanup_begin(cleanup);
+    (void)silt_cleanup_adopt(cleanup, silt_group_acquire(process_group));
+    silt_cleanup_ready(mask);
+    return cleanup->handle;
+}
+
+pid_t getpgid(pid_t process) {
+    if (process == 0 || process == getpid()) {
+        SiltCleanup cleanup;
+        uint32_t group = silt_group_acquire_guarded(&cleanup, 0);
+        NevaProcessGroupInfoV1 info;
+        NevaStatus status = group ? (NevaStatus)(int64_t)sys_rpc(group,
+            PROCESS_GROUP_RPC_QUERY, (uint64_t)(uintptr_t)&info, sizeof(info))
+            : NEVA_STATUS_NOT_FOUND;
+        silt_cleanup_end(&cleanup);
+        if (status == NEVA_STATUS_OK) return (pid_t)info.leader_process_id;
+    } else {
+        int index = child_index(process);
+        if (index >= 0 && g_children[index].pgid) return g_children[index].pgid;
+    }
+    errno = ESRCH;
+    return -1;
+}
+
+pid_t getpgrp(void) { return getpgid(0); }
+
+int setpgid(pid_t process, pid_t group) {
+    if (process < 0 || group < 0) { errno = EINVAL; return -1; }
+    if (process == 0) process = getpid();
+    if (group == 0) group = process;
+    if (getpgid(process) == group) return 0;
+    errno = EPERM;
+    return -1;
+}
+
+int killpg(pid_t process_group, int signal_number) {
+    if (process_group < 0 || signal_number < 0 || signal_number >= NSIG) {
+        errno = EINVAL; return -1;
+    }
+    SiltCleanup cleanup;
+    uint32_t group = silt_group_acquire_guarded(&cleanup, process_group);
+    if (!group) { silt_cleanup_end(&cleanup); errno = ESRCH; return -1; }
+    NevaProcessGroupInfoV1 info;
+    NevaStatus status = (NevaStatus)(int64_t)sys_rpc(group, PROCESS_GROUP_RPC_QUERY,
+        (uint64_t)(uintptr_t)&info, sizeof(info));
+    if (status == NEVA_STATUS_OK) status = (NevaStatus)(int64_t)sys_rpc(group,
+        PROCESS_GROUP_RPC_SIGNAL, (uint64_t)signal_number, info.generation);
+    silt_cleanup_end(&cleanup);
+    if (status == NEVA_STATUS_OK) return 0;
+    errno = ESRCH;
+    return -1;
 }

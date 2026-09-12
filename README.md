@@ -19,17 +19,22 @@ The repository currently provides:
 - a reproducible, hash-pinned dash 0.5.13.5 source preparation step;
 - a freestanding ARM64 cross-build that compiles every dash translation unit,
   links a Silt-owned libc baseline, and rejects unresolved process symbols;
-- an explicit Silt configuration that starts without line editing or job
-  control while the underlying POSIX descriptor/process adapters are built;
+- interactive job control through capability-scoped process groups and ttyd,
+  without an additional line-editing library;
+- capability-backed pipes with forced-death EOF/SIGPIPE recovery, broadcast
+  readiness, atomic 512-byte writes, and fork/exec/CLOEXEC lifetime tests;
 - architecture and implementation contracts for growing Silt without adding
   ambient authority to Neva.
 
-The current D3 image runs a curated dash suite in QEMU, including shell-language
+The image runs a curated dash suite in QEMU, including shell-language
 built-ins, scripts, scoped filesystem lookup, external commands, subshells,
 command substitution, redirection, environment/descriptor handoff across
 `execve`, and multi-stage pipelines. Pipeline stages are attached to one
-capability-backed ProcessGroup before they resume. Interactive job control
-remains D4 work; dash is not yet installed as `/bin/sh`.
+capability-backed ProcessGroup before they resume. Run `dash -i` from nsh for
+experimental interactive job control (`jobs`, `bg`, `fg`, Ctrl-C, and Ctrl-Z).
+nsh remains the default recovery shell; dash is not yet installed as `/bin/sh`.
+The supported subset and remaining gaps are documented in
+`docs/architecture/signals-and-terminal.md`.
 
 ## Build Silt
 

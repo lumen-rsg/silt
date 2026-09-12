@@ -6,8 +6,12 @@
 static inline void silt_pipeline_begin(void) {}
 static inline void silt_pipeline_end(void) {}
 static inline void silt_pipeline_abort(void) {}
+static inline void silt_job_prepare(int group, int foreground) { (void)group; (void)foreground; }
+static inline void silt_job_finish(int pid) { (void)pid; }
 #else
 void silt_pipeline_begin(void);
 void silt_pipeline_end(void);
 void silt_pipeline_abort(void);
+void silt_job_prepare(int group, int foreground);
+void silt_job_finish(int pid);
 #endif

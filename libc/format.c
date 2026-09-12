@@ -45,12 +45,32 @@ int vsnprintf(char* output, size_t capacity, const char* format, va_list argumen
             append_character(&buffer, *format++);
             continue;
         }
+        int left = 0;
         while (*format == '-' || *format == '+' || *format == ' '
-               || *format == '#' || *format == '0') format++;
-        while (*format >= '0' && *format <= '9') format++;
+               || *format == '#' || *format == '0') {
+            if (*format == '-') left = 1;
+            format++;
+        }
+        int width = 0;
+        if (*format == '*') {
+            width = va_arg(arguments, int);
+            format++;
+            if (width < 0) { left = 1; width = width == INT32_MIN ? INT32_MAX : -width; }
+        } else {
+            while (*format >= '0' && *format <= '9') {
+                if (width < 100000) width = width * 10 + (*format - '0');
+                format++;
+            }
+        }
+        int precision = -1;
         if (*format == '.') {
             format++;
-            while (*format >= '0' && *format <= '9') format++;
+            precision = 0;
+            if (*format == '*') { precision = va_arg(arguments, int); format++; }
+            else while (*format >= '0' && *format <= '9') {
+                if (precision < 100000) precision = precision * 10 + (*format - '0');
+                format++;
+            }
         }
         int long_value = 0;
         while (*format == 'l' || *format == 'j' || *format == 'z'
@@ -60,7 +80,14 @@ int vsnprintf(char* output, size_t capacity, const char* format, va_list argumen
         }
         char conversion = *format ? *format++ : '\0';
         if (conversion == 's') {
-            append_string(&buffer, va_arg(arguments, const char*));
+            const char* value = va_arg(arguments, const char*);
+            if (!value) value = "(null)";
+            size_t length = 0;
+            while ((precision < 0 || length < (size_t)precision) && value[length]) length++;
+            size_t padding = width > 0 && (size_t)width > length ? (size_t)width - length : 0;
+            if (!left) for (size_t index = 0; index < padding; index++) append_character(&buffer, ' ');
+            for (size_t index = 0; index < length; index++) append_character(&buffer, value[index]);
+            if (left) for (size_t index = 0; index < padding; index++) append_character(&buffer, ' ');
         } else if (conversion == 'c') {
             append_character(&buffer, (char)va_arg(arguments, int));
         } else if (conversion == 'd' || conversion == 'i') {
@@ -89,4 +116,12 @@ int vsnprintf(char* output, size_t capacity, const char* format, va_list argumen
         output[terminal] = '\0';
     }
     return (int)buffer.length;
+}
+
+int snprintf(char* output, size_t capacity, const char* format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    int result = vsnprintf(output, capacity, format, arguments);
+    va_end(arguments);
+    return result;
 }

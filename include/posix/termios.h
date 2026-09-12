@@ -1,5 +1,14 @@
 #pragma once
 
+#define ECHO 1U
+#define ISIG 4U
+#define TOSTOP 8U
+#define VERASE 0
+#define VKILL 1
+#define VEOF 2
+#define VINTR 3
+#define VSUSP 4
+
 #include <stdint.h>
 
 typedef uint32_t tcflag_t;

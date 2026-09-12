@@ -107,6 +107,7 @@ dash_port_archive = static_library(
 )
 
 silt_libc_sources = files(
+  'libc/cleanup.c',
   'libc/ctype.c',
   'libc/descriptors.c',
   'libc/format.c',
@@ -115,6 +116,7 @@ silt_libc_sources = files(
   'libc/runtime.c',
   'libc/setjmp.S',
   'libc/startup.c',
+  'libc/terminal.c',
   'libc/crt0.S',
 )
 silt_libc_includes = include_directories(
@@ -154,7 +156,25 @@ test(
   ],
 )
 
+test(
+  'rootfs-harness-framing',
+  python,
+  args: files('tools/test_rootfs_harness.py'),
+)
+
+test(
+  'dash-linux-interrupt-reference',
+  find_program('python3'),
+  args: [files('tools/test_dash_interrupt.py'), source_root / 'vendor/dash-0.5.13.5/src/dash'],
+)
+
 silt_app_names = [
+  'check-cleanup',
+  'check-faults',
+  'check-pager-smp',
+  'check-pipes',
+  'check-signals',
+  'check-terminal',
   'echo',
   'false',
   'id',
@@ -179,6 +199,7 @@ silt_app_c_args = [
   '-ffile-prefix-map=' + source_root + '=.',
   '-fdebug-prefix-map=' + source_root + '=.',
   '-I' + source_root / 'apps',
+  '-I' + source_root / 'include/posix',
   '-I' + neva_source_root / 'apps',
   '-I' + neva_source_root / 'ports',
   '-I' + neva_source_root / 'services/initd/include',
@@ -302,8 +323,8 @@ run_target(
 summary(
   {
     'dash version': '0.5.13.5',
-    'dash mode': 'D3 execution/pipeline image',
-    'job control': 'disabled until the Silt POSIX adapter is ready',
+    'dash mode': 'D4 interactive job-control bring-up',
+    'job control': 'enabled through capability-scoped process groups and ttyd',
     'line editing': 'disabled (dash SMALL configuration)',
     'Neva source': neva_source_dir,
     'Neva build': neva_build_dir,

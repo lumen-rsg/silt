@@ -6,14 +6,23 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import socket
+import re
+import shutil
 
 
 def command_output(
     session, runner, command: str, markers: tuple[bytes, ...], timeout: int = 30,
 ) -> bytes:
+    command_bytes = command.encode()
+    if len(command_bytes) > 126 or b"\n" in command_bytes:
+        raise ValueError(f"command exceeds nsh's single-line input contract: {command!r}")
     start = len(session.output)
     session.send(command)
-    if not session.read_until(runner.PROMPT, timeout=timeout, start_offset=start):
+    if not session.read_until(command_bytes, timeout=timeout, start_offset=start):
+        raise TimeoutError(f"complete command was not echoed: {command!r}")
+    marker_offset = session.output.index(command_bytes, start) + len(command_bytes)
+    if not session.read_until(runner.PROMPT, timeout=timeout, start_offset=marker_offset):
         tail = session.output[start:].decode(errors="replace")[-2000:]
         raise TimeoutError(
             f"prompt did not return after {command!r}; output={tail!r}"
@@ -21,10 +30,6 @@ def command_output(
     # nsh writes its prompt directly while Silt applications write through
     # ttyd, so the prompt can overtake the final service-backed output bytes.
     # Wait for declared output after the prompt as well as before it.
-    command_bytes = command.encode()
-    command_position = session.output.find(command_bytes, start)
-    marker_offset = command_position + len(command_bytes) \
-        if command_position >= 0 else start
     for marker in markers:
         if marker not in session.output[marker_offset:] and not session.read_until(
             marker, timeout=timeout, start_offset=marker_offset,
@@ -49,17 +54,28 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--neva-source", type=Path, required=True)
     parser.add_argument("--neva-build", type=Path, required=True)
+    parser.add_argument("--kernel", type=Path,
+                        help="alternative kernel ELF; --gdb-log requires matching neva-build ttyd symbols")
     parser.add_argument("--rootfs", type=Path, required=True)
     parser.add_argument("--smp", type=int, default=4)
+    parser.add_argument("--restart-tests", action="store_true",
+                        help="inject idle ttyd/sessiond EL0 crashes through local QEMU GDB")
+    parser.add_argument("--uart-log", type=Path, help="retain complete guest UART output")
+    parser.add_argument("--gdb-log", type=Path, help="read-only guest snapshot on timeout")
+    parser.add_argument("--terminal-cycles", type=int, default=1,
+                        help="repeat the background/foreground termios sequence (1-128)")
     args = parser.parse_args()
+    if not 1 <= args.terminal_cycles <= 128:
+        parser.error("--terminal-cycles must be between 1 and 128")
 
     neva_source = args.neva_source.resolve()
     neva_build = args.neva_build.resolve()
     rootfs = args.rootfs.resolve()
+    kernel = args.kernel.resolve() if args.kernel else neva_build / 'neva.elf'
     if not rootfs.is_file():
         parser.error(f"rootfs image does not exist: {rootfs}")
-    if not (neva_build / "neva.elf").is_file():
-        parser.error(f"Neva kernel does not exist: {neva_build / 'neva.elf'}")
+    if not kernel.is_file():
+        parser.error(f"Neva kernel does not exist: {kernel}")
 
     tools_dir = neva_source / "tools"
     sys.path.insert(0, str(tools_dir))
@@ -71,6 +87,26 @@ def main() -> int:
         f"--nevfs-image={rootfs}",
     ]
     import test_runner as runner
+    runner.KERNEL_NAME = str(kernel)
+
+    if args.gdb_log:
+        # Snapshot symbols must match the booted bytes, even if a later build
+        # replaces the build directory while a long stress run is active.
+        debug_kernel = args.gdb_log.with_suffix(".elf").resolve()
+        debug_tty = args.gdb_log.with_suffix(".ttyd.elf").resolve()
+        shutil.copyfile(kernel, debug_kernel)
+        shutil.copyfile(neva_build / 'apps/ttyd.elf', debug_tty)
+        runner.KERNEL_NAME = str(debug_kernel)
+
+    if args.restart_tests or args.gdb_log:
+        from qemu_service_fault import crash_idle_service
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            debug_port = listener.getsockname()[1]
+        original_command = runner.qemu_command
+        runner.qemu_command = lambda media: original_command(media) + [
+            '-gdb', f'tcp:127.0.0.1:{debug_port}',
+        ]
 
     session = runner.QemuSession()
     checks: list[tuple[str, bool, str]] = []
@@ -80,9 +116,10 @@ def main() -> int:
         suffix = f": {detail}" if detail else ""
         print(f"  [{'PASS' if passed else 'FAIL'}] {name}{suffix}")
 
-    def run(command: str, markers: tuple[bytes, ...], name: str) -> None:
+    def run(command: str, markers: tuple[bytes, ...], name: str, timeout: int = 30,
+            stop_on_timeout: bool = True) -> None:
         try:
-            output = command_output(session, runner, command, markers)
+            output = command_output(session, runner, command, markers, timeout)
             lines = tuple(line.strip() for line in output.splitlines())
 
             def marker_present(marker: bytes) -> bool:
@@ -105,6 +142,8 @@ def main() -> int:
             record(name, passed, detail)
         except TimeoutError as error:
             record(name, False, str(error))
+            if stop_on_timeout:
+                raise
 
     try:
         print("=== Booting Neva with the Silt R0 rootfs ===")
@@ -123,11 +162,11 @@ def main() -> int:
         for marker in boot_markers:
             record("boot:" + marker.decode().split(":", 1)[0],
                    marker in session.output)
-        if any(marker not in session.output for marker in boot_markers):
-            failures = [line for line in session.output.decode(
-                errors="replace").splitlines() if "FAIL" in line]
-            if failures:
-                print("  boot diagnostics: " + " | ".join(failures[-8:]))
+        failures = [line for line in session.output.decode(errors="replace").splitlines()
+                    if re.search(r": FAIL(?:\s|$)", line)]
+        record("boot self-tests contain no failure", not failures, " | ".join(failures[-8:]))
+        if failures or any(marker not in session.output for marker in boot_markers):
+            return 1
 
         # The recovery prompt can appear before the asynchronous kernel/service
         # self-tests finish. Re-synchronize after B3_INITD_READY so later
@@ -271,8 +310,8 @@ def main() -> int:
         run("status", (b"status=0",), "dash builtin pipeline status")
         run(
             "dash -c 'printf \"DASH_MULTI=ok\\n\" | "
-            "{ IFS= read -r line; printf \"%s\\n\" \"$line\"; } | "
-            "{ IFS= read -r line; printf \"%s\\n\" \"$line\"; }'",
+            "{ read x; printf \"%s\\n\" \"$x\"; } | "
+            "{ read x; printf \"%s\\n\" \"$x\"; }'",
             (b"DASH_MULTI=ok",),
             "dash multi-stage pipeline",
         )
@@ -306,6 +345,226 @@ def main() -> int:
         )
         run("status", (b"status=0",), "dash environment handoff status")
 
+        print("\n=== dash interactive job control ===")
+        run("check-terminal peek", (b"D4_EVENT_PEEK: observer/consumer/empty/flags/rights/stale PASS",),
+            "non-consuming Event observation")
+        run("status", (b"status=0",), "Event observation status")
+        run("check-cleanup", (
+            b"D4_CLEANUP: nonresident signal handler PASS",
+            b"D4_CLEANUP: acquisition/nested guards/mask/CLOEXEC PASS",
+            b"D4_CLEANUP: fork isolation/failed exec/exec close PASS",
+            b"D4_CLEANUP: caught reply/default-fatal IPC ownership PASS",
+            b"D4_CLEANUP: pipe/tty EINTR/longjmp capacity PASS",
+            b"D4_CLEANUP: background write/attributes/foreground capacity PASS",
+        ), "Silt interrupted-operation cleanup", timeout=180, stop_on_timeout=True)
+        run("status", (b"status=0",), "Silt cleanup status")
+        run("check-faults", (b"D4_FAULTS: typed wait/default/ignore/block/catch/nested/escape PASS",),
+            "Silt synchronous fault signal status")
+        run("status", (b"status=0",), "Silt fault status checks")
+        run("check-pager-smp", (
+            b"D4_PAGER_SMP: concurrent cold RX faults PASS",
+        ), "SMP pager request coalescing")
+        run("status", (b"status=0",), "SMP pager status")
+        run("check-pipes", (
+            b"D4_PIPES: kill/fault/raw-exit drain PASS",
+            b"D4_PIPES: blocked EOF/EPIPE PASS",
+            b"D4_PIPES: reader/writer broadcast PASS",
+            b"D4_PIPES: dup/fork/exec/CLOEXEC PASS",
+            b"D4_PIPES: SIGPIPE/rights/revoke PASS",
+            b"D4_PIPES: atomic writes/exhaustion/suspended death PASS",
+            b"D4_PIPES: repeated forced teardown PASS",
+        ), "Silt forced-death pipe lifecycle")
+        run("status", (b"status=0",), "Silt pipe lifecycle status")
+        run("check-terminal", (b"D4_TERMINAL: stop/resume/ignore/block/catch/authority PASS",),
+            "Silt background terminal policy")
+        run("status", (b"status=0",), "Silt terminal policy status")
+        run("check-signals", (b"D4_SIGNALS: query/mask/suspend/fork/termios PASS",),
+            "Silt signal and terminal ABI")
+        start = len(session.output)
+        session.send("dash -i")
+        if not session.read_until(b"$ ", timeout=15, start_offset=start):
+            raise TimeoutError("dash interactive prompt missing")
+        session.send("PS1='D4> '")
+        session.send("printf 'D4_READY\\n'")
+        if not session.read_until(b"D4_READY\n", timeout=15, start_offset=start):
+            raise TimeoutError(f"dash interactive startup failed: {session.output[start:]!r}")
+        ready_end = session.output.find(b"D4_READY\n", start) + len(b"D4_READY\n")
+        session.read_until(b"D4> ", timeout=15, start_offset=ready_end)
+
+        command_sequence = 0
+        def interactive(command: str, marker: bytes = b"D4> ") -> bytes:
+            nonlocal command_sequence
+            command_sequence += 1
+            begin = len(session.output)
+            done = f"D4_DONE_{command_sequence}".encode()
+            command += (" " if command.rstrip().endswith("&") else "; ") + "printf '" + done.decode() + "\\n'"
+            session.send(command)
+            echoed = command.encode()
+            if not session.read_until(echoed, timeout=15, start_offset=begin):
+                raise TimeoutError(f"missing interactive echo: {command}")
+            after_echo = session.output.find(echoed, begin) + len(echoed)
+            if not session.read_until(done + b"\n", timeout=15, start_offset=after_echo):
+                raise TimeoutError(f"missing interactive output: {command}; {session.output[begin:]!r}")
+            done_end = session.output.find(done + b"\n", after_echo) + len(done) + 1
+            session.read_until(marker, timeout=15, start_offset=done_end)
+            return session.output[after_echo:]
+
+        output = interactive("echo D4_EXTERNAL")
+        record("dash interactive external command", b"D4_EXTERNAL" in output)
+        for kind, status, diagnostic in (
+            ("segv", 139, b"Segmentation fault"),
+            ("ill", 132, b"Illegal instruction"),
+            ("bus", 135, b"Bus error"),
+        ):
+            output = interactive(f"check-faults {kind}; printf 'D4_FAULT_STATUS=%s\\n' \"$?\"")
+            record(f"dash {kind} foreground status and diagnostic",
+                   f"D4_FAULT_STATUS={status}\n".encode() in output and diagnostic in output)
+        output = interactive("check-faults exit139; printf 'D4_NORMAL_STATUS=%s\\n' \"$?\"")
+        record("dash normal exit 139 is not a signal diagnostic",
+               b"D4_NORMAL_STATUS=139\n" in output and b"Segmentation fault" not in output)
+        output = interactive("check-faults ill & p=$!; wait $p; printf 'D4_WAIT_STATUS=%s\\n' \"$?\"")
+        record("dash background fault wait status", b"D4_WAIT_STATUS=132\n" in output)
+        output = interactive("true | check-faults segv; printf 'D4_PIPE_FAULT=%s\\n' \"$?\"")
+        record("dash last pipeline member fault status", b"D4_PIPE_FAULT=139\n" in output)
+        output = interactive("check-faults segv | true; printf 'D4_PIPE_LAST=%s\\n' \"$?\"")
+        record("dash successful last member overrides earlier fault", b"D4_PIPE_LAST=0\n" in output)
+        output = interactive("(trap 'printf \"D4_EXIT_TRAP=%s\\n\" \"$?\"' EXIT; check-faults bus; exit $?)")
+        record("dash EXIT trap observes fault status", b"D4_EXIT_TRAP=135\n" in output)
+        start = len(session.output)
+        session.send("(trap 'printf \"D4_CONT\\n\"' CONT; printf 'D4_RUNNING\\n'; while :; do :; done)")
+        if not session.read_until(b"D4_RUNNING\n", timeout=15, start_offset=start):
+            raise TimeoutError(f"job did not start: {session.output[start:]!r}")
+        start = len(session.output)
+        session.send_raw(b"\x1a")
+        stopped_prompt = session.read_until(b"D4> ", timeout=15, start_offset=start)
+        record("dash Ctrl-Z restores prompt", stopped_prompt,
+               "" if stopped_prompt else repr(session.output[start:]))
+        output = interactive("jobs")
+        record("dash jobs reports stopped job", b"Stopped" in output)
+        start = len(session.output)
+        output = interactive("bg")
+        record("dash bg resumes job", b"while" in output)
+        if not session.read_until(b"D4_CONT\n", timeout=15, start_offset=start):
+            raise TimeoutError("background job did not acknowledge continuation")
+        start = len(session.output)
+        session.send("fg")
+        # fg prints the command before changing the terminal owner. Wait for
+        # the job's caught SIGCONT, not that early command display.
+        if not session.read_until(b"D4_CONT\n", timeout=15, start_offset=start):
+            raise TimeoutError("foreground job did not acknowledge continuation")
+        start = len(session.output)
+        session.send_raw(b"\x03")
+        record("dash Ctrl-C interrupts foreground job", session.read_until(b"D4> ", timeout=15, start_offset=start))
+        output = interactive("printf 'D4_ALIVE\\n'")
+        record("dash survives foreground interrupt", b"D4_ALIVE" in output)
+        for attempt in range(2):
+            start = len(session.output)
+            session.send_raw(b"\x03")
+            record(f"dash prompt interrupt {attempt + 1}", session.read_until(b"D4> ", timeout=15, start_offset=start))
+        for attempt in range(160):
+            start = len(session.output)
+            session.send_raw(b"\x03")
+            if not session.read_until(b"D4> ", timeout=15, start_offset=start):
+                raise TimeoutError(f"dash repeated prompt interrupt {attempt + 1} failed")
+        output = interactive("printf 'D4_INTERRUPT_STRESS_ALIVE\\n'")
+        record("dash survives 160 repeated prompt interrupts", b"D4_INTERRUPT_STRESS_ALIVE\n" in output)
+        output = interactive("read value &")
+        for attempt in range(5):
+            output = interactive("jobs")
+            if b"Stopped" in output: break
+        record("dash background read SIGTTIN", b"Stopped" in output)
+        start = len(session.output)
+        session.send("fg")
+        session.read_until(b"read value", timeout=10, start_offset=start)
+        start = len(session.output)
+        session.send("D4_INPUT")
+        record("dash fg resumes terminal input", session.read_until(b"D4> ", timeout=15, start_offset=start))
+        interactive("check-signals tostop")
+        interactive("echo D4_BACKGROUND_WRITE &")
+        for attempt in range(5):
+            output = interactive("jobs")
+            if b"Stopped" in output: break
+        record("dash background write SIGTTOU", b"Stopped" in output)
+        output = interactive("fg")
+        record("dash foreground write resumes", b"D4_BACKGROUND_WRITE" in output.splitlines())
+        for cycle in range(args.terminal_cycles):
+            print(f"  terminal cycle {cycle + 1}/{args.terminal_cycles}")
+            interactive("check-signals normal")
+            interactive("check-terminal set-erase &")
+            for attempt in range(5):
+                output = interactive("jobs")
+                if b"Stopped" in output: break
+            record("dash background termios SIGTTOU without TOSTOP", b"Stopped" in output)
+            output = interactive("check-terminal show-erase")
+            record("stopped setter has not mutated termios", b"D4_ERASE=127" in output)
+            interactive("bg")
+            for attempt in range(5):
+                output = interactive("jobs")
+                if b"Stopped" in output: break
+            record("background continuation stops setter again", b"Stopped" in output)
+            output = interactive("fg")
+            record("foreground continuation completes setter", b"D4_ERASE_SET" in output)
+            output = interactive("check-terminal show-erase")
+            record("foreground setter mutation visible", b"D4_ERASE=8" in output)
+            interactive("check-terminal reset-erase")
+        output = interactive("printf 'D4_PIPELINE\\n' | { read line; printf '%s\\n' \"$line\"; }")
+        record("dash foreground pipeline", b"D4_PIPELINE" in output)
+        if args.restart_tests:
+            def restart_service(interface: int, marker: bytes) -> None:
+                begin = len(session.output)
+                diagnostic = crash_idle_service(debug_kernel if args.gdb_log else kernel,
+                                                debug_port, interface)
+                print(diagnostic.strip())
+                if not session.read_until(marker, timeout=30, start_offset=begin):
+                    raise TimeoutError(f"restart recovery missing {marker!r}: {session.output[begin:]!r}")
+                print(f"D4_RECOVERED_SERVICE interface={interface}: {marker.decode()}")
+
+            # Five live members exceed the old recovery enumeration capacity.
+            interactive("(read pending) &")
+            interactive("(read pending) &")
+            for _ in range(8):
+                output = interactive("jobs")
+                if output.count(b"Stopped") >= 2: break
+            record("restart background jobs stopped", output.count(b"Stopped") >= 2)
+            begin = len(session.output)
+            session.send("(printf 'D4_RESTART_READ_READY\\n'; read answer; printf 'D4_RESTART_READ:%s\\n' \"$answer\")")
+            if not session.read_until(b"D4_RESTART_READ_READY\n", timeout=15, start_offset=begin):
+                raise TimeoutError("foreground read job did not start")
+            restart_service(0x4E45564154545931, b"C8_TTY_RESTART: foreground authority restored PASS")
+            restart_service(0x4E45565543000000 + 1000,
+                            b"C7_MANAGER_RESTART: retained generation/query-only recovery PASS")
+            begin = len(session.output)
+            session.send("D4_RECOVERED")
+            read_ok = session.read_until(b"D4_RESTART_READ:D4_RECOVERED\n", timeout=15, start_offset=begin)
+            prompt_ok = session.read_until(b"D4> ", timeout=15, start_offset=begin)
+            record("foreground read survives ttyd and sessiond crashes", read_ok and prompt_ok,
+                   "" if read_ok and prompt_ok else repr(session.output[begin:]))
+            output = interactive("jobs")
+            record("restart preserves stopped background jobs", output.count(b"Stopped") >= 2)
+            for _ in range(2):
+                begin = len(session.output)
+                session.send("fg")
+                session.read_until(b"read pending", timeout=10, start_offset=begin)
+                session.send("done")
+                if not session.read_until(b"D4> ", timeout=15, start_offset=begin):
+                    raise TimeoutError("recovered background job did not finish")
+            begin = len(session.output)
+            session.send("(printf 'D4_RESTART_BUSY\\n'; while :; do :; done)")
+            if not session.read_until(b"D4_RESTART_BUSY\n", timeout=15, start_offset=begin):
+                raise TimeoutError("foreground busy job did not start")
+            restart_service(0x4E45565543000000 + 1000,
+                            b"C7_MANAGER_RESTART: retained generation/query-only recovery PASS")
+            restart_service(0x4E45564154545931, b"C8_TTY_RESTART: foreground authority restored PASS")
+            begin = len(session.output)
+            session.send_raw(b"\x03")
+            record("Ctrl-C targets recovered foreground job",
+                   session.read_until(b"D4> ", timeout=15, start_offset=begin))
+            output = interactive("printf 'D4_RESTART_ALIVE\\n'")
+            record("dash alive after repeated service crashes", b"D4_RESTART_ALIVE" in output)
+        start = len(session.output)
+        session.send("exit")
+        record("dash exit restores nsh", session.read_until(runner.PROMPT, timeout=15, start_offset=start))
+
         print("\n=== Session teardown ===")
         start = len(session.output)
         session.send("exit")
@@ -314,8 +573,17 @@ def main() -> int:
             timeout=30, start_offset=start,
         )
         record("session teardown", teardown)
+    except TimeoutError as error:
+        record("UART completion", False, str(error))
+        if args.gdb_log:
+            from qemu_snapshot import snapshot
+            args.gdb_log.write_text(snapshot(debug_kernel, debug_port, debug_tty))
+            print(f"  retained read-only snapshot: {args.gdb_log}")
+        return 1
     finally:
         session.kill()
+        if args.uart_log:
+            args.uart_log.write_bytes(session.output)
 
     failed = sum(not passed for _, passed, _ in checks)
     print(f"\nSilt rootfs acceptance: {len(checks) - failed} passed, {failed} failed")

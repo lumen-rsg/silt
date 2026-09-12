@@ -1,0 +1,13 @@
+--- a/src/input.c
++++ b/src/input.c
+@@ -311,6 +311,10 @@
+ 
+ 	pnr = nr;
+ retry:
++	if (int_pending()) {
++		errno = EINTR;
++		return -1;
++	}
+ 	nr = pnr;
+ #ifndef SMALL
+ 	if (fd == 0 && el) {

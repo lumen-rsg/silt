@@ -25,10 +25,9 @@
 static int g_errno;
 static char* g_environment[SILT_ENVIRONMENT_MAX + 1U];
 char** environ = g_environment;
-static sigset_t g_signal_mask;
 static mode_t g_umask = 022;
 
-void silt_environment_exec_restore(const SiltExecInfoV1* info) {
+void silt_environment_exec_restore(const SiltExecInfoV2* info) {
     for (size_t index = 0; index <= SILT_ENVIRONMENT_MAX; index++) {
         g_environment[index] = NULL;
     }
@@ -132,7 +131,7 @@ char* setlocale(int category, const char* locale) {
 }
 
 sighandler_t signal(int signal_number, sighandler_t handler) {
-    sighandler_t previous = sys_sigaction(signal_number, handler);
+    sighandler_t previous = sys_signal_action(signal_number, handler, 0, 1, NULL);
     if (previous == SIG_ERR) errno = EINVAL;
     return previous;
 }
@@ -143,15 +142,21 @@ int sigaction(int signal_number, const struct sigaction* action,
         errno = EINVAL;
         return -1;
     }
-    sighandler_t prior = sys_sigaction(
-        signal_number, action ? action->sa_handler : SIG_DFL);
+    if (action && action->sa_flags != 0) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    uint32_t old_mask = 0;
+    sighandler_t prior = sys_signal_action(signal_number,
+        action ? action->sa_handler : SIG_DFL,
+        action ? (uint32_t)action->sa_mask : 0, action != NULL, &old_mask);
     if (prior == SIG_ERR) {
         errno = EINVAL;
         return -1;
     }
     if (previous) {
         previous->sa_handler = prior;
-        previous->sa_mask = 0;
+        previous->sa_mask = old_mask;
         previous->sa_flags = 0;
     }
     return 0;
@@ -202,21 +207,22 @@ int sigismember(const sigset_t* set, int signal_number) {
 }
 
 int sigprocmask(int operation, const sigset_t* set, sigset_t* previous) {
-    if (previous) *previous = g_signal_mask;
-    if (!set) return 0;
-    if (operation == SIG_SETMASK) g_signal_mask = *set;
-    else if (operation == SIG_BLOCK) g_signal_mask |= *set;
-    else if (operation == SIG_UNBLOCK) g_signal_mask &= ~*set;
-    else {
+    if (set && operation != SIG_SETMASK && operation != SIG_BLOCK
+        && operation != SIG_UNBLOCK) {
         errno = EINVAL;
         return -1;
     }
+    uint64_t old = sys_signal_mask(set ? (uint32_t)operation : 3,
+        set ? (uint32_t)*set : 0);
+    if (old == UINT64_MAX) { errno = EINVAL; return -1; }
+    if (previous) *previous = (sigset_t)old;
     return 0;
 }
 
 int sigsuspend(const sigset_t* mask) {
-    if (mask) g_signal_mask = *mask;
-    errno = EINTR;
+    if (!mask) { errno = EFAULT; return -1; }
+    NevaStatus result = sys_signal_suspend((uint32_t)*mask);
+    errno = result == NEVA_STATUS_INTERRUPTED ? EINTR : EINVAL;
     return -1;
 }
 
@@ -243,11 +249,16 @@ char* strerror(int error) {
 
 char* strsignal(int signal_number) {
     switch (signal_number) {
+        case SIGILL: return "Illegal instruction";
+        case SIGBUS: return "Bus error";
+        case SIGSEGV: return "Segmentation fault";
         case SIGINT: return "Interrupt";
         case SIGKILL: return "Killed";
         case SIGTERM: return "Terminated";
         case SIGSTOP: return "Stopped";
-        case SIGTSTP: return "Stopped (tty)";
+        case SIGTSTP: return "Stopped";
+        case SIGTTIN: return "Stopped (tty input)";
+        case SIGTTOU: return "Stopped (tty output)";
         default: return "Signal";
     }
 }
@@ -256,16 +267,6 @@ mode_t umask(mode_t mask) {
     mode_t previous = g_umask;
     g_umask = mask & 0777;
     return previous;
-}
-
-int tcgetattr(int descriptor, struct termios* attributes) {
-    if (!attributes || !isatty(descriptor)) {
-        if (!attributes) errno = EINVAL;
-        return -1;
-    }
-    memset(attributes, 0, sizeof(*attributes));
-    attributes->c_lflag = ICANON;
-    return 0;
 }
 
 size_t mbrlen(const char* string, size_t size, mbstate_t* state) {

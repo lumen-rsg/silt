@@ -1,5 +1,6 @@
 #include "libneva.h"
 #include "filesystem_service.h"
+#include "byte_stream.h"
 #include "silt_internal.h"
 
 #include <dirent.h>
@@ -13,13 +14,14 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/param.h>
 #include <unistd.h>
+
+_Static_assert(PIPE_BUF == NEVA_BYTE_STREAM_IO_MAX, "Silt pipe atomic-write contract drift");
 
 #define SILT_DESCRIPTOR_MAX 32
 #define SILT_DESCRIPTION_MAX 32
 #define SILT_IO_BYTES 4096U
-#define SILT_PIPE_MAX 8
-#define SILT_PIPE_BYTES 4000U
 
 typedef enum {
     SILT_DESCRIPTION_FREE = 0,
@@ -38,7 +40,6 @@ typedef struct {
     uint32_t references;
     int status_flags;
     uint64_t offset;
-    uint8_t pipe_index;
     char path[NEVA_FS_PATH_MAX + 1U];
 } SiltOpenDescription;
 
@@ -56,29 +57,8 @@ struct SiltDirectory {
     struct dirent current;
 };
 
-typedef struct {
-    uint32_t lock;
-    uint32_t head;
-    uint32_t count;
-    uint32_t readers;
-    uint32_t writers;
-    uint8_t bytes[SILT_PIPE_BYTES];
-} SiltPipeShared;
-
-typedef struct {
-    uint32_t shm;
-    uint32_t readable;
-    uint32_t writable;
-    SiltPipeShared* shared;
-    uint8_t local_descriptions;
-    uint8_t fork_reader;
-    uint8_t fork_writer;
-    uint8_t provisional_children;
-} SiltPipe;
-
 static SiltDescriptor g_descriptors[SILT_DESCRIPTOR_MAX];
 static SiltOpenDescription g_descriptions[SILT_DESCRIPTION_MAX];
-static SiltPipe g_pipes[SILT_PIPE_MAX];
 static int g_initialized;
 static char g_cwd[NEVA_FS_PATH_MAX + 1U] = "/";
 
@@ -101,75 +81,6 @@ static int status_errno(NevaStatus status) {
         case NEVA_STATUS_PEER_RESTARTED:
         case NEVA_STATUS_BAD_STATE: return EIO;
         default: return EIO;
-    }
-}
-
-static void pipe_lock(SiltPipeShared* shared) {
-    for (;;) {
-        uint32_t observed;
-        uint32_t failed = 1;
-        uint32_t locked;
-        __asm__ volatile(
-            "ldaxr %w0, [%3]\n"
-            "cbnz %w0, 1f\n"
-            "mov %w2, #1\n"
-            "stxr %w1, %w2, [%3]\n"
-            "1:\n"
-            : "=&r"(observed), "+&r"(failed), "=&r"(locked)
-            : "r"(&shared->lock)
-            : "memory");
-        if (observed == 0 && failed == 0) return;
-        sys_yield();
-    }
-}
-
-static void pipe_unlock(SiltPipeShared* shared) {
-    __asm__ volatile("stlr wzr, [%0]" : : "r"(&shared->lock) : "memory");
-}
-
-static int pipe_state_allocate(void) {
-    for (int index = 0; index < SILT_PIPE_MAX; index++) {
-        if (g_pipes[index].shm == 0) return index;
-    }
-    errno = ENFILE;
-    return -1;
-}
-
-static void pipe_state_destroy(int index) {
-    SiltPipe* pipe_state = &g_pipes[index];
-    if (pipe_state->shared && pipe_state->shared != (void*)-1) {
-        (void)sys_shm_unmap(pipe_state->shm);
-    } else if (pipe_state->shm) {
-        (void)sys_handle_close(pipe_state->shm);
-    }
-    if (pipe_state->readable) (void)sys_handle_close(pipe_state->readable);
-    if (pipe_state->writable) (void)sys_handle_close(pipe_state->writable);
-    *pipe_state = (SiltPipe){ 0 };
-}
-
-static void pipe_description_release(SiltOpenDescription* description) {
-    int index = description->pipe_index;
-    if (index >= SILT_PIPE_MAX || !g_pipes[index].shm) return;
-    SiltPipe* pipe_state = &g_pipes[index];
-    pipe_lock(pipe_state->shared);
-    if (description->kind == SILT_DESCRIPTION_PIPE_READ) {
-        if (pipe_state->shared->readers > 0) pipe_state->shared->readers--;
-    } else if (pipe_state->shared->writers > 0) {
-        pipe_state->shared->writers--;
-    }
-    uint32_t readers = pipe_state->shared->readers;
-    uint32_t writers = pipe_state->shared->writers;
-    pipe_unlock(pipe_state->shared);
-    if (description->kind == SILT_DESCRIPTION_PIPE_READ && readers == 0) {
-        (void)sys_event_signal(pipe_state->writable, 1);
-    }
-    if (description->kind == SILT_DESCRIPTION_PIPE_WRITE && writers == 0) {
-        (void)sys_event_signal(pipe_state->readable, 1);
-    }
-    if (pipe_state->local_descriptions > 0) pipe_state->local_descriptions--;
-    if (pipe_state->local_descriptions == 0
-        && pipe_state->provisional_children == 0) {
-        pipe_state_destroy(index);
     }
 }
 
@@ -365,7 +276,9 @@ static SiltOpenDescription* descriptor_get(int descriptor) {
 static void description_sync_cloexec(int index) {
     SiltOpenDescription* description = &g_descriptions[index];
     if ((description->kind != SILT_DESCRIPTION_FILE
-         && description->kind != SILT_DESCRIPTION_DIRECTORY)
+         && description->kind != SILT_DESCRIPTION_DIRECTORY
+         && description->kind != SILT_DESCRIPTION_PIPE_READ
+         && description->kind != SILT_DESCRIPTION_PIPE_WRITE)
         || !description->handle) return;
     int all_cloexec = 1;
     for (int descriptor = 0; descriptor < SILT_DESCRIPTOR_MAX; descriptor++) {
@@ -386,13 +299,11 @@ static void description_release(int index) {
         return;
     }
     if ((description->kind == SILT_DESCRIPTION_FILE
-         || description->kind == SILT_DESCRIPTION_DIRECTORY)
+         || description->kind == SILT_DESCRIPTION_DIRECTORY
+         || description->kind == SILT_DESCRIPTION_PIPE_READ
+         || description->kind == SILT_DESCRIPTION_PIPE_WRITE)
         && description->handle) {
         (void)sys_handle_close(description->handle);
-    }
-    if (description->kind == SILT_DESCRIPTION_PIPE_READ
-        || description->kind == SILT_DESCRIPTION_PIPE_WRITE) {
-        pipe_description_release(description);
     }
     memset(description, 0, sizeof(*description));
 }
@@ -409,265 +320,90 @@ static int descriptor_close(int descriptor) {
     return 0;
 }
 
-int silt_descriptors_fork_prepare(void) {
-    for (int pipe_index = 0; pipe_index < SILT_PIPE_MAX; pipe_index++) {
-        SiltPipe* pipe_state = &g_pipes[pipe_index];
-        if (!pipe_state->shm) continue;
-        pipe_state->fork_reader = 0;
-        pipe_state->fork_writer = 0;
-        for (int description = 0; description < SILT_DESCRIPTION_MAX;
-             description++) {
-            if (g_descriptions[description].references == 0
-                || g_descriptions[description].pipe_index != pipe_index) {
-                continue;
-            }
-            if (g_descriptions[description].kind == SILT_DESCRIPTION_PIPE_READ) {
-                pipe_state->fork_reader = 1;
-            }
-            if (g_descriptions[description].kind == SILT_DESCRIPTION_PIPE_WRITE) {
-                pipe_state->fork_writer = 1;
-            }
-        }
-        pipe_lock(pipe_state->shared);
-        pipe_state->shared->readers += pipe_state->fork_reader;
-        pipe_state->shared->writers += pipe_state->fork_writer;
-        pipe_unlock(pipe_state->shared);
-        if (pipe_state->fork_reader || pipe_state->fork_writer) {
-            pipe_state->provisional_children++;
-        }
-    }
-    return 0;
-}
-
-void silt_descriptors_fork_rollback(void) {
-    for (int pipe_index = 0; pipe_index < SILT_PIPE_MAX; pipe_index++) {
-        SiltPipe* pipe_state = &g_pipes[pipe_index];
-        if (!pipe_state->shm) continue;
-        int inherited = pipe_state->fork_reader || pipe_state->fork_writer;
-        pipe_lock(pipe_state->shared);
-        if (pipe_state->fork_reader && pipe_state->shared->readers > 0) {
-            pipe_state->shared->readers--;
-        }
-        if (pipe_state->fork_writer && pipe_state->shared->writers > 0) {
-            pipe_state->shared->writers--;
-        }
-        pipe_unlock(pipe_state->shared);
-        pipe_state->fork_reader = 0;
-        pipe_state->fork_writer = 0;
-        if (inherited && pipe_state->provisional_children > 0) {
-            pipe_state->provisional_children--;
-        }
-        if (pipe_state->local_descriptions == 0
-            && pipe_state->provisional_children == 0) {
-            pipe_state_destroy(pipe_index);
-        }
-    }
-}
-
-void silt_descriptors_fork_inheritance(uint8_t* readers, uint8_t* writers) {
-    if (readers) *readers = 0;
-    if (writers) *writers = 0;
-    for (int pipe_index = 0; pipe_index < SILT_PIPE_MAX; pipe_index++) {
-        if (g_pipes[pipe_index].fork_reader && readers) {
-            *readers |= (uint8_t)(1U << pipe_index);
-        }
-        if (g_pipes[pipe_index].fork_writer && writers) {
-            *writers |= (uint8_t)(1U << pipe_index);
-        }
-    }
-}
-
-void silt_descriptors_fork_commit(uint8_t readers, uint8_t writers) {
-    for (int pipe_index = 0; pipe_index < SILT_PIPE_MAX; pipe_index++) {
-        SiltPipe* pipe_state = &g_pipes[pipe_index];
-        uint8_t mask = (uint8_t)(1U << pipe_index);
-        if (!pipe_state->shm || ((readers | writers) & mask) == 0) continue;
-        if (pipe_state->provisional_children > 0) {
-            pipe_state->provisional_children--;
-        }
-        if (pipe_state->local_descriptions == 0
-            && pipe_state->provisional_children == 0) {
-            pipe_state_destroy(pipe_index);
-        }
-    }
-}
-
-void silt_descriptors_fork_discard(uint8_t readers, uint8_t writers) {
-    for (int pipe_index = 0; pipe_index < SILT_PIPE_MAX; pipe_index++) {
-        SiltPipe* pipe_state = &g_pipes[pipe_index];
-        uint8_t mask = (uint8_t)(1U << pipe_index);
-        if (!pipe_state->shm || ((readers | writers) & mask) == 0) continue;
-        pipe_lock(pipe_state->shared);
-        if ((readers & mask) && pipe_state->shared->readers > 0) {
-            pipe_state->shared->readers--;
-        }
-        if ((writers & mask) && pipe_state->shared->writers > 0) {
-            pipe_state->shared->writers--;
-        }
-        uint32_t reader_count = pipe_state->shared->readers;
-        uint32_t writer_count = pipe_state->shared->writers;
-        pipe_unlock(pipe_state->shared);
-        if ((readers & mask) && reader_count == 0) {
-            (void)sys_event_signal(pipe_state->writable, 1);
-        }
-        if ((writers & mask) && writer_count == 0) {
-            (void)sys_event_signal(pipe_state->readable, 1);
-        }
-        if (pipe_state->provisional_children > 0) {
-            pipe_state->provisional_children--;
-        }
-        if (pipe_state->local_descriptions == 0
-            && pipe_state->provisional_children == 0) {
-            pipe_state_destroy(pipe_index);
-        }
-    }
-}
-
-int silt_descriptors_fork_child(void) {
-    for (int pipe_index = 0; pipe_index < SILT_PIPE_MAX; pipe_index++) {
-        SiltPipe* pipe_state = &g_pipes[pipe_index];
-        if (!pipe_state->shm) continue;
-        pipe_state->shared = (SiltPipeShared*)sys_shm_map(pipe_state->shm);
-        pipe_state->fork_reader = 0;
-        pipe_state->fork_writer = 0;
-        pipe_state->provisional_children = 0;
-        if (!pipe_state->shared || pipe_state->shared == (void*)-1) return -1;
-    }
-    return 0;
-}
-
 int pipe(int descriptors[2]) {
     if (!descriptors) {
         errno = EFAULT;
         return -1;
     }
     descriptors_initialize();
-    int pipe_index = pipe_state_allocate();
-    if (pipe_index < 0) return -1;
-    SiltPipe* pipe_state = &g_pipes[pipe_index];
-    pipe_state->shm = sys_shm_create(sizeof(SiltPipeShared));
-    pipe_state->shared = pipe_state->shm
-        ? (SiltPipeShared*)sys_shm_map(pipe_state->shm) : (void*)-1;
-    int64_t readable = sys_event_create(0, UINT64_MAX);
-    int64_t writable = sys_event_create(0, UINT64_MAX);
-    if (!pipe_state->shm || !pipe_state->shared
-        || pipe_state->shared == (void*)-1 || readable <= 0
-        || readable > UINT32_MAX || writable <= 0 || writable > UINT32_MAX) {
-        if (readable > 0 && readable <= UINT32_MAX) {
-            (void)sys_handle_close((uint32_t)readable);
-        }
-        if (writable > 0 && writable <= UINT32_MAX) {
-            (void)sys_handle_close((uint32_t)writable);
-        }
-        pipe_state_destroy(pipe_index);
-        errno = ENOMEM;
+    uint32_t read_handle, write_handle;
+    NevaStatus status = sys_byte_stream_create(&read_handle, &write_handle);
+    if (status != NEVA_STATUS_OK) {
+        errno = status_errno(status);
         return -1;
     }
-    pipe_state->readable = (uint32_t)readable;
-    pipe_state->writable = (uint32_t)writable;
-    memset(pipe_state->shared, 0, sizeof(*pipe_state->shared));
-    pipe_state->shared->readers = 1;
-    pipe_state->shared->writers = 1;
-    int reader = description_allocate(
-        SILT_DESCRIPTION_PIPE_READ, 0, 0, O_RDONLY, NULL);
-    int writer = description_allocate(
-        SILT_DESCRIPTION_PIPE_WRITE, 0, 0, O_WRONLY, NULL);
-    if (reader < 0 || writer < 0) {
+    int reader = description_allocate(SILT_DESCRIPTION_PIPE_READ,
+        read_handle, HANDLE_RIGHT_RPC | HANDLE_RIGHT_READ | HANDLE_RIGHT_TRANSFER,
+        O_RDONLY, NULL);
+    int writer = description_allocate(SILT_DESCRIPTION_PIPE_WRITE,
+        write_handle, HANDLE_RIGHT_RPC | HANDLE_RIGHT_WRITE | HANDLE_RIGHT_TRANSFER,
+        O_WRONLY, NULL);
+    int read_fd = reader >= 0 ? descriptor_allocate_from(reader, 0, 0) : -1;
+    int write_fd = writer >= 0 ? descriptor_allocate_from(writer, 0, 0) : -1;
+    if (read_fd < 0 || write_fd < 0) {
+        if (read_fd >= 0) g_descriptors[read_fd] = (SiltDescriptor){ 0 };
+        if (write_fd >= 0) g_descriptors[write_fd] = (SiltDescriptor){ 0 };
         if (reader >= 0) memset(&g_descriptions[reader], 0, sizeof(g_descriptions[reader]));
         if (writer >= 0) memset(&g_descriptions[writer], 0, sizeof(g_descriptions[writer]));
-        pipe_state_destroy(pipe_index);
+        (void)sys_handle_close(read_handle);
+        (void)sys_handle_close(write_handle);
         errno = EMFILE;
         return -1;
     }
-    g_descriptions[reader].pipe_index = (uint8_t)pipe_index;
-    g_descriptions[writer].pipe_index = (uint8_t)pipe_index;
-    pipe_state->local_descriptions = 2;
-    int read_descriptor = descriptor_allocate_from(reader, 0, 0);
-    int write_descriptor = descriptor_allocate_from(writer, 0, 0);
-    if (read_descriptor < 0 || write_descriptor < 0) {
-        if (read_descriptor >= 0) g_descriptors[read_descriptor] = (SiltDescriptor){ 0 };
-        if (write_descriptor >= 0) g_descriptors[write_descriptor] = (SiltDescriptor){ 0 };
-        memset(&g_descriptions[reader], 0, sizeof(g_descriptions[reader]));
-        memset(&g_descriptions[writer], 0, sizeof(g_descriptions[writer]));
-        pipe_state_destroy(pipe_index);
-        errno = EMFILE;
-        return -1;
-    }
-    descriptors[0] = read_descriptor;
-    descriptors[1] = write_descriptor;
+    descriptors[0] = read_fd;
+    descriptors[1] = write_fd;
     return 0;
 }
 
-static int pipe_read_io(SiltOpenDescription* description, void* buffer,
-                        size_t size) {
-    SiltPipe* pipe_state = &g_pipes[description->pipe_index];
-    uint8_t* bytes = buffer;
-    if (size == 0) return 0;
-    for (;;) {
-        pipe_lock(pipe_state->shared);
-        uint32_t available = pipe_state->shared->count;
-        uint32_t writers = pipe_state->shared->writers;
-        if (available > 0) {
-            uint32_t count = size < available ? (uint32_t)size : available;
-            for (uint32_t index = 0; index < count; index++) {
-                bytes[index] = pipe_state->shared->bytes[
-                    (pipe_state->shared->head + index) % SILT_PIPE_BYTES];
-            }
-            pipe_state->shared->head =
-                (pipe_state->shared->head + count) % SILT_PIPE_BYTES;
-            pipe_state->shared->count -= count;
-            pipe_unlock(pipe_state->shared);
-            (void)sys_event_signal(pipe_state->writable, 1);
-            return (int)count;
-        }
-        pipe_unlock(pipe_state->shared);
-        if (writers == 0) return 0;
-        NevaStatus status = sys_event_wait(
-            pipe_state->readable, NEVA_DEADLINE_INFINITE, 0);
-        if (status != NEVA_STATUS_OK) {
-            errno = status == NEVA_STATUS_CANCELLED ? EINTR : EIO;
-            return -1;
-        }
-    }
-}
-
-static int pipe_write_io(SiltOpenDescription* description,
-                         const void* buffer, size_t size) {
-    SiltPipe* pipe_state = &g_pipes[description->pipe_index];
-    const uint8_t* bytes = buffer;
+static int pipe_io(SiltOpenDescription* description, void* buffer, size_t size,
+                   int writing) {
     size_t complete = 0;
+    uint64_t epoch = sys_signal_epoch();
     while (complete < size) {
-        pipe_lock(pipe_state->shared);
-        uint32_t readers = pipe_state->shared->readers;
-        uint32_t space = SILT_PIPE_BYTES - pipe_state->shared->count;
-        if (readers == 0) {
-            pipe_unlock(pipe_state->shared);
-            errno = EPIPE;
-            (void)raise(SIGPIPE);
-            return complete ? (int)complete : -1;
-        }
-        if (space > 0) {
-            uint32_t count = (uint32_t)(size - complete);
-            if (count > space) count = space;
-            uint32_t tail = (pipe_state->shared->head
-                + pipe_state->shared->count) % SILT_PIPE_BYTES;
-            for (uint32_t index = 0; index < count; index++) {
-                pipe_state->shared->bytes[(tail + index) % SILT_PIPE_BYTES]
-                    = bytes[complete + index];
+        size_t count = size - complete;
+        if (count > NEVA_BYTE_STREAM_IO_MAX) count = NEVA_BYTE_STREAM_IO_MAX;
+        uint32_t method = writing ? BYTE_STREAM_RPC_WRITE : BYTE_STREAM_RPC_READ;
+        uint64_t address = (uintptr_t)buffer + complete;
+        int64_t result = (int64_t)sys_rpc(description->handle, method, address, count);
+        if (result == NEVA_STATUS_WOULD_BLOCK) {
+            SiltCleanup cleanup;
+            uint32_t mask = silt_cleanup_begin(&cleanup);
+            int64_t snapshot = (int64_t)sys_rpc(description->handle,
+                BYTE_STREAM_RPC_DUP_CHANGE_EVENT, 0, 0);
+            if (snapshot > 0 && snapshot <= UINT32_MAX) {
+                snapshot = silt_cleanup_adopt(&cleanup, (uint32_t)snapshot);
             }
-            pipe_state->shared->count += count;
-            complete += count;
-            pipe_unlock(pipe_state->shared);
-            (void)sys_event_signal(pipe_state->readable, 1);
-            continue;
+            silt_cleanup_ready(mask);
+            if (snapshot <= 0 || snapshot > UINT32_MAX) {
+                silt_cleanup_end(&cleanup);
+                errno = snapshot < 0 ? status_errno((NevaStatus)snapshot) : EIO;
+                return complete ? (int)complete : -1;
+            }
+            uint32_t event = (uint32_t)snapshot;
+            // Subscribe, then retry: progress or peer death between the first
+            // attempt and subscription must not become a lost wakeup.
+            result = (int64_t)sys_rpc(description->handle, method, address, count);
+            if (result == NEVA_STATUS_WOULD_BLOCK) {
+                NevaStatus status = sys_event_wait_epoch(event, NEVA_DEADLINE_INFINITE, epoch);
+                silt_cleanup_end(&cleanup);
+                if (status == NEVA_STATUS_OK) continue;
+                errno = status == NEVA_STATUS_INTERRUPTED || status == NEVA_STATUS_CANCELLED
+                    ? EINTR : status_errno(status);
+                return complete ? (int)complete : -1;
+            }
+            silt_cleanup_end(&cleanup);
         }
-        pipe_unlock(pipe_state->shared);
-        NevaStatus status = sys_event_wait(
-            pipe_state->writable, NEVA_DEADLINE_INFINITE, 0);
-        if (status != NEVA_STATUS_OK) {
-            errno = status == NEVA_STATUS_CANCELLED ? EINTR : EIO;
+        if (result < 0) {
+            if (writing && result == NEVA_STATUS_PEER_CLOSED) {
+                (void)raise(SIGPIPE);
+                errno = EPIPE;
+            } else {
+                errno = status_errno((NevaStatus)result);
+            }
             return complete ? (int)complete : -1;
         }
+        if (!writing) return (int)result;
+        complete += (size_t)result;
     }
     return (int)complete;
 }
@@ -692,49 +428,9 @@ static int description_exec_survives(int description) {
     return 0;
 }
 
-int silt_descriptors_exec_export(SiltExecInfoV1* info) {
+int silt_descriptors_exec_export(SiltExecInfoV2* info) {
     if (!info) return -1;
     descriptors_initialize();
-    for (int pipe_index = 0; pipe_index < SILT_PIPE_MAX; pipe_index++) {
-        SiltPipe* pipe_state = &g_pipes[pipe_index];
-        if (!pipe_state->shm) continue;
-        if (info->pipe_count == SILT_EXEC_PIPE_MAX
-            || sys_handle_set_flags(pipe_state->shm, 0) != NEVA_STATUS_OK
-            || sys_handle_set_flags(pipe_state->readable, 0) != NEVA_STATUS_OK
-            || sys_handle_set_flags(pipe_state->writable, 0) != NEVA_STATUS_OK) {
-            return -1;
-        }
-        uint8_t active_read = 0;
-        uint8_t active_write = 0;
-        uint8_t surviving_read = 0;
-        uint8_t surviving_write = 0;
-        for (int description = 0; description < SILT_DESCRIPTION_MAX;
-             description++) {
-            if (g_descriptions[description].references == 0
-                || g_descriptions[description].pipe_index != pipe_index) {
-                continue;
-            }
-            active_read |= g_descriptions[description].kind
-                == SILT_DESCRIPTION_PIPE_READ;
-            active_write |= g_descriptions[description].kind
-                == SILT_DESCRIPTION_PIPE_WRITE;
-            if (!description_exec_survives(description)) continue;
-            surviving_read |= g_descriptions[description].kind
-                == SILT_DESCRIPTION_PIPE_READ;
-            surviving_write |= g_descriptions[description].kind
-                == SILT_DESCRIPTION_PIPE_WRITE;
-        }
-        info->pipes[info->pipe_count++] = (SiltExecPipeV1){
-            .identifier = (uint8_t)pipe_index,
-            .flags = (uint8_t)((active_read && !surviving_read
-                    ? SILT_EXEC_PIPE_CLOSE_READ : 0)
-                | (active_write && !surviving_write
-                    ? SILT_EXEC_PIPE_CLOSE_WRITE : 0)),
-            .shm = pipe_state->shm,
-            .readable = pipe_state->readable,
-            .writable = pipe_state->writable,
-        };
-    }
     for (int description = 0; description < SILT_DESCRIPTION_MAX;
          description++) {
         SiltOpenDescription* source = &g_descriptions[description];
@@ -742,12 +438,11 @@ int silt_descriptors_exec_export(SiltExecInfoV1* info) {
             continue;
         }
         if (info->description_count == SILT_EXEC_DESCRIPTION_MAX) return -1;
-        SiltExecDescriptionV1* target =
+        SiltExecDescriptionV2* target =
             &info->descriptions[info->description_count++];
-        *target = (SiltExecDescriptionV1){
+        *target = (SiltExecDescriptionV2){
             .identifier = (uint8_t)description,
             .kind = (uint8_t)source->kind,
-            .pipe_identifier = source->pipe_index,
             .handle = source->handle,
             .rights = source->rights,
             .status_flags = source->status_flags,
@@ -769,7 +464,7 @@ int silt_descriptors_exec_export(SiltExecInfoV1* info) {
             continue;
         }
         if (info->descriptor_count == SILT_EXEC_DESCRIPTOR_MAX) return -1;
-        info->descriptors[info->descriptor_count++] = (SiltExecDescriptorV1){
+        info->descriptors[info->descriptor_count++] = (SiltExecDescriptorV2){
             .descriptor = (uint8_t)descriptor,
             .description = (uint8_t)(g_descriptors[descriptor].description - 1U),
             .flags = g_descriptors[descriptor].flags,
@@ -778,63 +473,21 @@ int silt_descriptors_exec_export(SiltExecInfoV1* info) {
     return 0;
 }
 
-int silt_descriptors_exec_restore(const SiltExecInfoV1* info) {
+int silt_descriptors_exec_restore(const SiltExecInfoV2* info) {
     if (!info || info->descriptor_count > SILT_EXEC_DESCRIPTOR_MAX
         || info->description_count > SILT_EXEC_DESCRIPTION_MAX
-        || info->pipe_count > SILT_EXEC_PIPE_MAX
         || info->string_bytes > SILT_EXEC_STRING_BYTES) {
         return -1;
     }
     memset(g_descriptors, 0, sizeof(g_descriptors));
     memset(g_descriptions, 0, sizeof(g_descriptions));
-    memset(g_pipes, 0, sizeof(g_pipes));
-    for (uint16_t index = 0; index < info->pipe_count; index++) {
-        const SiltExecPipeV1* source = &info->pipes[index];
-        if (source->identifier >= SILT_PIPE_MAX || !source->shm
-            || !source->readable || !source->writable
-            || g_pipes[source->identifier].shm != 0
-            || (source->flags
-                & ~(SILT_EXEC_PIPE_CLOSE_READ | SILT_EXEC_PIPE_CLOSE_WRITE))) {
-            return -1;
-        }
-        SiltPipe* target = &g_pipes[source->identifier];
-        target->shm = source->shm;
-        target->readable = source->readable;
-        target->writable = source->writable;
-        target->shared = (SiltPipeShared*)sys_shm_map(target->shm);
-        if (!target->shared || target->shared == (void*)-1) return -1;
-        pipe_lock(target->shared);
-        if ((source->flags & SILT_EXEC_PIPE_CLOSE_READ)
-            && target->shared->readers > 0) {
-            target->shared->readers--;
-        }
-        if ((source->flags & SILT_EXEC_PIPE_CLOSE_WRITE)
-            && target->shared->writers > 0) {
-            target->shared->writers--;
-        }
-        uint32_t readers = target->shared->readers;
-        uint32_t writers = target->shared->writers;
-        pipe_unlock(target->shared);
-        if ((source->flags & SILT_EXEC_PIPE_CLOSE_READ) && readers == 0) {
-            (void)sys_event_signal(target->writable, 1);
-        }
-        if ((source->flags & SILT_EXEC_PIPE_CLOSE_WRITE) && writers == 0) {
-            (void)sys_event_signal(target->readable, 1);
-        }
-    }
     for (uint16_t index = 0; index < info->description_count; index++) {
-        const SiltExecDescriptionV1* source = &info->descriptions[index];
+        const SiltExecDescriptionV2* source = &info->descriptions[index];
         if (source->identifier >= SILT_DESCRIPTION_MAX
             || source->kind == SILT_DESCRIPTION_FREE
             || source->kind > SILT_DESCRIPTION_PIPE_WRITE
             || g_descriptions[source->identifier].kind
                 != SILT_DESCRIPTION_FREE) {
-            return -1;
-        }
-        if ((source->kind == SILT_DESCRIPTION_PIPE_READ
-             || source->kind == SILT_DESCRIPTION_PIPE_WRITE)
-            && (source->pipe_identifier >= SILT_PIPE_MAX
-                || !g_pipes[source->pipe_identifier].shm)) {
             return -1;
         }
         SiltOpenDescription* target = &g_descriptions[source->identifier];
@@ -844,7 +497,6 @@ int silt_descriptors_exec_restore(const SiltExecInfoV1* info) {
             .rights = source->rights,
             .status_flags = source->status_flags,
             .offset = source->offset,
-            .pipe_index = source->pipe_identifier,
         };
         if (source->path_length) {
             if (source->path_length > NEVA_FS_PATH_MAX
@@ -858,13 +510,9 @@ int silt_descriptors_exec_restore(const SiltExecInfoV1* info) {
             memcpy(target->path, &info->strings[source->path_offset],
                    source->path_length + 1U);
         }
-        if (target->kind == SILT_DESCRIPTION_PIPE_READ
-            || target->kind == SILT_DESCRIPTION_PIPE_WRITE) {
-            g_pipes[target->pipe_index].local_descriptions++;
-        }
     }
     for (uint16_t index = 0; index < info->descriptor_count; index++) {
-        const SiltExecDescriptorV1* source = &info->descriptors[index];
+        const SiltExecDescriptorV2* source = &info->descriptors[index];
         if (source->descriptor >= SILT_DESCRIPTOR_MAX
             || source->description >= SILT_DESCRIPTION_MAX
             || g_descriptors[source->descriptor].description != 0
@@ -883,12 +531,6 @@ int silt_descriptors_exec_restore(const SiltExecInfoV1* info) {
         if (g_descriptions[description].kind != SILT_DESCRIPTION_FREE
             && g_descriptions[description].references == 0) {
             return -1;
-        }
-    }
-    for (int pipe_index = 0; pipe_index < SILT_PIPE_MAX; pipe_index++) {
-        if (g_pipes[pipe_index].shm
-            && g_pipes[pipe_index].local_descriptions == 0) {
-            pipe_state_destroy(pipe_index);
         }
     }
     g_initialized = 1;
@@ -1172,22 +814,14 @@ int read(int descriptor, void* buffer, size_t size) {
     }
     if (description->kind == SILT_DESCRIPTION_NULL) return 0;
     if (description->kind == SILT_DESCRIPTION_PIPE_READ) {
-        return pipe_read_io(description, buffer, size);
+        return pipe_io(description, buffer, size, 0);
     }
     if (description->kind == SILT_DESCRIPTION_PIPE_WRITE) {
         errno = EBADF;
         return -1;
     }
     if (description->kind == SILT_DESCRIPTION_TTY) {
-        uint8_t* bytes = buffer;
-        size_t complete = 0;
-        while (complete < size) {
-            int byte = neva_getc();
-            if (byte == 0) break;
-            bytes[complete++] = (uint8_t)byte;
-            if (byte == '\n') break;
-        }
-        return (int)complete;
+        return silt_tty_read(description->handle, buffer, size);
     }
     if (description->kind != SILT_DESCRIPTION_FILE) {
         errno = EISDIR;
@@ -1209,16 +843,14 @@ int write(int descriptor, const void* buffer, size_t size) {
     }
     if (description->kind == SILT_DESCRIPTION_NULL) return (int)size;
     if (description->kind == SILT_DESCRIPTION_PIPE_WRITE) {
-        return pipe_write_io(description, buffer, size);
+        return pipe_io(description, (void*)buffer, size, 1);
     }
     if (description->kind == SILT_DESCRIPTION_PIPE_READ) {
         errno = EBADF;
         return -1;
     }
     if (description->kind == SILT_DESCRIPTION_TTY) {
-        const uint8_t* bytes = buffer;
-        for (size_t index = 0; index < size; index++) neva_putc((char)bytes[index]);
-        return (int)size;
+        return silt_tty_write(description->handle, buffer, size);
     }
     if (description->kind != SILT_DESCRIPTION_FILE) {
         errno = EISDIR;
@@ -1303,6 +935,11 @@ int fcntl(int descriptor, int command, ...) {
     } else if (command == F_GETFL) result = description->status_flags;
     else if (command == F_SETFL) {
         int flags = va_arg(arguments, int);
+        if (flags & O_NONBLOCK) {
+            va_end(arguments);
+            errno = ENOTSUP;
+            return -1;
+        }
         description->status_flags = (description->status_flags & ~O_APPEND)
             | (flags & O_APPEND);
         result = 0;
@@ -1324,6 +961,14 @@ int isatty(int descriptor) {
     SiltOpenDescription* description = descriptor_get(descriptor);
     if (!description) return 0;
     if (description->kind == SILT_DESCRIPTION_TTY) return 1;
+    errno = ENOTTY;
+    return 0;
+}
+
+uint32_t silt_descriptor_tty(int descriptor) {
+    SiltOpenDescription* description = descriptor_get(descriptor);
+    if (!description) return 0;
+    if (description->kind == SILT_DESCRIPTION_TTY) return description->handle;
     errno = ENOTTY;
     return 0;
 }

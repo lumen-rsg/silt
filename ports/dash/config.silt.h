@@ -41,9 +41,8 @@
 #define USE_MEMFD_CREATE 0
 #define USE_TEE 0
 
-// Start with the language engine. Interactive job control is enabled only
-// after pipe/dup2/waitpid/tcsetpgrp are backed by capability-safe adapters.
-#define JOBS 0
+// Process groups and terminal foreground changes use capability-safe adapters.
+#define JOBS 1
 #define SMALL 1
 
 #define _PATH_BSHELL "/bin/sh"

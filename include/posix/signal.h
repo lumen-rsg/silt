@@ -62,4 +62,5 @@ int sigismember(const sigset_t* set, int signal_number);
 int sigprocmask(int operation, const sigset_t* set, sigset_t* previous);
 int sigsuspend(const sigset_t* mask);
 int kill(pid_t process, int signal_number);
+int killpg(pid_t process_group, int signal_number);
 int raise(int signal_number);
