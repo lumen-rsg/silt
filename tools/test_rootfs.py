@@ -10,6 +10,8 @@ import socket
 import re
 import shutil
 
+from dash_job_cases import frame_command, run_job_cases
+
 
 def command_output(
     session, runner, command: str, markers: tuple[bytes, ...], timeout: int = 30,
@@ -401,7 +403,7 @@ def main() -> int:
             command_sequence += 1
             begin = len(session.output)
             done = f"D4_DONE_{command_sequence}".encode()
-            command += (" " if command.rstrip().endswith("&") else "; ") + "printf '" + done.decode() + "\\n'"
+            command = frame_command(command, done.decode())
             session.send(command)
             echoed = command.encode()
             if not session.read_until(echoed, timeout=15, start_offset=begin):
@@ -410,8 +412,11 @@ def main() -> int:
             if not session.read_until(done + b"\n", timeout=15, start_offset=after_echo):
                 raise TimeoutError(f"missing interactive output: {command}; {session.output[begin:]!r}")
             done_end = session.output.find(done + b"\n", after_echo) + len(done) + 1
-            session.read_until(marker, timeout=15, start_offset=done_end)
+            if not session.read_until(marker, timeout=15, start_offset=done_end):
+                raise TimeoutError(f"missing interactive prompt after: {command}")
             return session.output[after_echo:]
+
+        run_job_cases(interactive, record)
 
         output = interactive("echo D4_EXTERNAL")
         record("dash interactive external command", b"D4_EXTERNAL" in output)

@@ -136,14 +136,19 @@ F_SETFL explicitly returns ENOTSUP. See Neva's
 - Background mutation and ignored/blocked SIGTTOU policy are implemented for
   the UART controlling-terminal profile. Orphaned-group EIO rules and full
   POSIX controlling-terminal acquisition/PTY sessions remain open.
-- Broader upstream-compatible job/trap cases and resource-exhaustion coverage
-  remain open. The bounded interruption-cleanup stress and its exact matrices
-  are recorded in Neva's `docs/architecture/d4-interruption-cleanup.md`.
-- The terminal-observer follow-up passed five expanded rootfs runs but its
-  fourth consecutive SMP-8 attempt failed in `check-pipes`, with an instruction
-  abort at the `fork` epilogue. Diagnose this retained failure before claiming
-  a clean consecutive matrix; see `d4-terminal-observer-wakeup.md` in Neva.
+- Twenty shared Linux/Silt job/trap cases now cover retained wait status,
+  substitution, traps across exec, job selection and reaping. Their
+  [acceptance record](d4-job-trap-conformance.md) distinguishes upstream-derived
+  cases, a pinned-Dash wait-all discrepancy, and the current verification state.
+  Interrupted shell waits, pipeline trap ordering and resource exhaustion remain
+  open. The bounded libc interruption-cleanup evidence remains in Neva's
+  `docs/architecture/d4-interruption-cleanup.md`.
+- Subsequent pager retry and lifetime-owned ASID corrections passed consecutive
+  SMP-8 matrices; see Neva's `d4-smp-retest-2026-09-13.md` and
+  `d4-asid-lifetime.md`. These supersede the earlier incomplete matrix status,
+  without attributing every historical fork-epilogue or provider failure.
 
-The existing Linux PTY test is a targeted upstream-source regression, not an
-upstream conformance suite. The QEMU rootfs suite is a curated Silt acceptance
-suite. Neither certifies complete shell or OS POSIX compatibility.
+The Linux PTY interrupt regression and shared job/trap cases are targeted
+checks against the prepared upstream-source reference, not an imported upstream
+conformance suite. The QEMU rootfs suite is curated Silt acceptance. Neither
+certifies complete shell or OS POSIX compatibility.

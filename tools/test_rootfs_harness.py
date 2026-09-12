@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 
 from test_rootfs import command_output
+from dash_job_cases import frame_command
 
 
 class Session:
@@ -27,6 +28,15 @@ class Session:
 
 class FramingTest(unittest.TestCase):
     runner = SimpleNamespace(PROMPT=b"1000$ ")
+
+    def test_interactive_line_limit_includes_completion_marker(self):
+        suffix = len(frame_command("", "DONE"))
+        self.assertEqual(len(frame_command("x" * (128 - suffix), "DONE")), 128)
+        with self.assertRaises(ValueError):
+            frame_command("x" * (129 - suffix), "DONE")
+        with self.assertRaises(ValueError):
+            frame_command("echo one\necho two", "DONE")
+        self.assertIn(" & printf", frame_command("true &", "DONE"))
 
     def test_echo_is_not_a_result(self):
         session = Session([b"echo PASS\n1000$ "])

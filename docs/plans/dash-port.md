@@ -93,7 +93,7 @@ Status: implemented bring-up slice; acceptance remains open. `JOBS=1` now
 exercises real action masks, atomic signal suspension, capability-backed job
 groups, and ttyd-backed terminal I/O. See
 `docs/architecture/signals-and-terminal.md` for the supported subset and
-remaining restart, hard-kill pipe-lifecycle, and conformance work.
+remaining wait/trap, resource-exhaustion and terminal-session work.
 
 - Complete `sigaction`, signal masks, `sigsuspend`, and interrupted-wait rules.
 - Implement `isatty`, the required `termios` subset, `tcgetpgrp`, and
@@ -361,6 +361,19 @@ binding. The FSD limit remains a separate resource boundary. These are native
 model and QEMU results, not physical ARM qualification or attribution of every
 historical failure. Next: broader upstream-compatible job/trap conformance.
 D4 remains open.
+
+Job/trap follow-up, 2026-09-13: twenty shared cases now exercise wait status,
+trap status/inheritance, upstream jobs/trap substitution behavior, job selectors,
+stop/resume and reaping on the pinned Linux PTY reference and Silt UART. See
+[the acceptance record](../architecture/d4-job-trap-conformance.md) for the
+explicit wait-all reference discrepancy, fixture failures and two negative
+controls. The five host/reference gates pass, including sixteen repeated Linux
+runs. The final frozen rootfs matrix passed **151/151 on 1/4/8/8/8/8 CPUs**,
+with four consecutive SMP-8 passes, 24 terminal cycles and 24 service crashes.
+Kernel and rootfs artifacts are unchanged from the preceding ASID item; the
+shared test driver now enforces ttyd's full framed-line limit and prompt return.
+D4 remains open. Next: caught-signal interruption of shell waits, then pipeline
+trap ordering and resource exhaustion.
 
 ## Milestone D5: `/bin/sh` release
 

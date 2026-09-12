@@ -168,6 +168,12 @@ test(
   args: [files('tools/test_dash_interrupt.py'), source_root / 'vendor/dash-0.5.13.5/src/dash'],
 )
 
+test(
+  'dash-linux-job-trap-reference',
+  python,
+  args: [files('tools/test_dash_jobs.py'), source_root / 'vendor/dash-0.5.13.5/src/dash'],
+)
+
 silt_app_names = [
   'check-cleanup',
   'check-faults',
