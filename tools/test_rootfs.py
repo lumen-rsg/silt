@@ -12,6 +12,7 @@ import shutil
 
 from dash_job_cases import frame_command, run_job_cases
 from dash_wait_cases import run_wait_cases
+from dash_pipeline_cases import drive_terminal, run_pipeline_cases
 from wait_observer import guest_suspend
 
 
@@ -403,7 +404,7 @@ def main() -> int:
         session.read_until(b"D4> ", timeout=15, start_offset=ready_end)
 
         command_sequence = 0
-        def interactive(command: str, marker: bytes = b"D4> ", interrupt_pid=None, ready=None) -> bytes:
+        def interactive(command: str, marker: bytes = b"D4> ", interrupt_pid=None, ready=None, steps=()) -> bytes:
             nonlocal command_sequence
             command_sequence += 1
             begin = len(session.output)
@@ -414,6 +415,12 @@ def main() -> int:
             if not session.read_until(echoed, timeout=15, start_offset=begin):
                 raise TimeoutError(f"missing interactive echo: {command}")
             after_echo = session.output.find(echoed, begin) + len(echoed)
+            def expect_step(expected, start):
+                if not session.read_until(expected, timeout=15, start_offset=start):
+                    raise TimeoutError(f"missing pipeline acknowledgement {expected!r}: {session.output[start:]!r}")
+                return session.output.find(expected, start) + len(expected)
+
+            drive_terminal(expect_step, session.send_raw, after_echo, steps)
             if interrupt_pid is not None:
                 print(guest_suspend(debug_kernel if args.gdb_log else kernel,
                                     debug_port, interrupt_pid), flush=True)
@@ -429,6 +436,7 @@ def main() -> int:
 
         run_job_cases(interactive, record)
         run_wait_cases(interactive, record)
+        run_pipeline_cases(interactive, record)
 
         output = interactive("echo D4_EXTERNAL")
         record("dash interactive external command", b"D4_EXTERNAL" in output)

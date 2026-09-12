@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from test_rootfs import command_output
 from dash_job_cases import frame_command
+from dash_pipeline_cases import drive_terminal
 
 
 class Session:
@@ -37,6 +38,34 @@ class FramingTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             frame_command("echo one\necho two", "DONE")
         self.assertIn(" & printf", frame_command("true &", "DONE"))
+
+    def test_pipeline_phases_do_not_reuse_old_acknowledgements(self):
+        transcript = b"A\nB\nB\nA\n"
+        seen = []
+        sent = []
+
+        def expect(marker, start):
+            end = transcript.index(marker, start) + len(marker)
+            seen.append(end)
+            return end
+
+        drive_terminal(expect, sent.append, 0,
+                       [([b"A\n", b"B\n"], b"stop"),
+                        ([b"A\n", b"B\n"], b"interrupt")])
+        self.assertEqual(seen, [2, 4, 8, 6])
+        self.assertEqual(sent, [b"stop", b"interrupt"])
+
+    def test_pipeline_missing_member_prevents_signal(self):
+        sent = []
+
+        def expect(marker, start):
+            if marker == b"B":
+                raise TimeoutError("second member never became ready")
+            return start + 1
+
+        with self.assertRaises(TimeoutError):
+            drive_terminal(expect, sent.append, 0, [([b"A", b"B"], b"interrupt")])
+        self.assertEqual(sent, [])
 
     def test_echo_is_not_a_result(self):
         session = Session([b"echo PASS\n1000$ "])

@@ -11,6 +11,7 @@ import time
 
 from dash_job_cases import frame_command, run_job_cases
 from dash_wait_cases import run_wait_cases
+from dash_pipeline_cases import drive_terminal, run_pipeline_cases
 from wait_observer import linux_suspend
 
 
@@ -38,7 +39,7 @@ def main():
                 output += data.replace(b"\r", b"")
         return output.index(marker, start) + len(marker)
 
-    def command(text, interrupt_pid=None, ready=None):
+    def command(text, interrupt_pid=None, ready=None, steps=()):
         nonlocal sequence
         sequence += 1
         done = f"JT_DONE_{sequence}"
@@ -50,11 +51,12 @@ def main():
             assert interrupt_pid == pid
             print(linux_suspend(pid), flush=True)
             os.write(descriptor, b"\x03")
+        drive_terminal(expect, lambda data: os.write(descriptor, data), begin, steps)
         end = expect(done.encode() + b"\n", begin)
         expect(b"JT> ", end)
         if ready is not None:
             expect(ready, begin)
-        return output[begin:end]
+        return output[begin:]
 
     def record(name, passed, detail=""):
         checks.append(passed)
@@ -64,6 +66,7 @@ def main():
         expect(b"JT> ", 0)
         run_job_cases(command, record)
         run_wait_cases(command, record)
+        run_pipeline_cases(command, record)
         print(f"Linux reference job/trap cases: {sum(checks)} passed, {checks.count(False)} failed")
     finally:
         if len(sys.argv) > 2:

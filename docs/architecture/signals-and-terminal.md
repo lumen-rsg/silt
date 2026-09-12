@@ -141,8 +141,11 @@ F_SETFL explicitly returns ENOTSUP. See Neva's
   [acceptance record](d4-job-trap-conformance.md) distinguishes upstream-derived
   cases, a pinned-Dash wait-all discrepancy, and the current verification state.
   Fourteen additional [wait-interruption checks](d4-wait-interruption.md) cover
-  caught SIGINT in observed suspended waits and retained-child reaping. Pipeline
-  trap ordering, broader signal-arrival cases and resource exhaustion remain open. The bounded libc interruption-cleanup evidence remains in Neva's
+  caught SIGINT in observed suspended waits and retained-child reaping. Twenty
+  [foreground-pipeline checks](d4-foreground-pipelines.md) cover two-member
+  stop/continue, per-member INT/EXIT ordering, last-member status and the shell's
+  foreground SIGINT trap. Broader signal-arrival cases and resource exhaustion
+  remain open. The bounded libc interruption-cleanup evidence remains in Neva's
   `docs/architecture/d4-interruption-cleanup.md`.
 - Subsequent pager retry and lifetime-owned ASID corrections passed consecutive
   SMP-8 matrices; see Neva's `d4-smp-retest-2026-09-13.md` and

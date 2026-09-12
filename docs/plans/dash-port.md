@@ -389,6 +389,19 @@ gate now requires read-only GDB observation before signal delivery. This closes
 the bounded caught-SIGINT suspended-wait slice. D4 remains open; foreground
 pipeline stop/continue and trap ordering are next.
 
+Foreground-pipeline follow-up, 2026-09-13: twenty additional shared checks cover
+two-member terminal stop, bg/fg continuation, group STOP, per-member INT/EXIT
+trap order, last-member status and foreground SIGINT propagation to the shell.
+[The pipeline acceptance record](../architecture/d4-foreground-pipelines.md)
+retains the corrected nested-function trap fixture race, both rejected negative
+controls and the final verification evidence. All five host/reference gates
+pass, as do sixteen frozen Linux runs of all 54 shared checks. The final frozen
+target matrix passed **185/185 on 1/4/8/8/8/8 CPUs**, including four consecutive
+SMP-8 runs, 120 new pipeline checks, 24 terminal cycles and 24 service crashes.
+The kernel/rootfs bytes remain unchanged. Independently delivered signals to a
+shell with a running foreground job remain separate coverage. D4 remains open; resource-exhaustion behavior and
+recovery are next.
+
 ## Milestone D5: `/bin/sh` release
 
 - Run upstream dash tests on Linux as the reference and under Neva/QEMU as the
