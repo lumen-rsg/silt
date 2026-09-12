@@ -152,3 +152,10 @@ those to every wait/trap interleaving. Orphaned-group EIO and full controlling
 terminal/PTY session semantics remain outside the current UART profile. Historical
 unattributed failures remain recorded in the port plan. Qualification here is
 Linux reference plus QEMU, with no physical ARM or full POSIX claim.
+
+
+The subsequent [caught-wait acceptance slice](d4-wait-interruption.md) adds
+fourteen shared checks, with explicit observation before SIGINT delivery and
+retained-child reaping. Its record supersedes the interrupted-wait next-item
+status above for that bounded case; broader signal and pipeline coverage remains
+open.

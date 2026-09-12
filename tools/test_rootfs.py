@@ -11,6 +11,8 @@ import re
 import shutil
 
 from dash_job_cases import frame_command, run_job_cases
+from dash_wait_cases import run_wait_cases
+from wait_observer import guest_suspend
 
 
 def command_output(
@@ -70,6 +72,9 @@ def main() -> int:
     if not 1 <= args.terminal_cycles <= 128:
         parser.error("--terminal-cycles must be between 1 and 128")
 
+    if shutil.which("gdb") is None:
+        parser.error("the wait/trap gate requires GDB with AArch64 and Python support")
+
     neva_source = args.neva_source.resolve()
     neva_build = args.neva_build.resolve()
     rootfs = args.rootfs.resolve()
@@ -100,15 +105,15 @@ def main() -> int:
         shutil.copyfile(neva_build / 'apps/ttyd.elf', debug_tty)
         runner.KERNEL_NAME = str(debug_kernel)
 
-    if args.restart_tests or args.gdb_log:
-        from qemu_service_fault import crash_idle_service
-        with socket.socket() as listener:
-            listener.bind(('127.0.0.1', 0))
-            debug_port = listener.getsockname()[1]
-        original_command = runner.qemu_command
-        runner.qemu_command = lambda media: original_command(media) + [
-            '-gdb', f'tcp:127.0.0.1:{debug_port}',
-        ]
+    # The wait/trap gate observes signal suspension through read-only GDB.
+    from qemu_service_fault import crash_idle_service
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        debug_port = listener.getsockname()[1]
+    original_command = runner.qemu_command
+    runner.qemu_command = lambda media: original_command(media) + [
+        '-gdb', f'tcp:127.0.0.1:{debug_port}',
+    ]
 
     session = runner.QemuSession()
     checks: list[tuple[str, bool, str]] = []
@@ -398,7 +403,7 @@ def main() -> int:
         session.read_until(b"D4> ", timeout=15, start_offset=ready_end)
 
         command_sequence = 0
-        def interactive(command: str, marker: bytes = b"D4> ") -> bytes:
+        def interactive(command: str, marker: bytes = b"D4> ", interrupt_pid=None, ready=None) -> bytes:
             nonlocal command_sequence
             command_sequence += 1
             begin = len(session.output)
@@ -409,14 +414,21 @@ def main() -> int:
             if not session.read_until(echoed, timeout=15, start_offset=begin):
                 raise TimeoutError(f"missing interactive echo: {command}")
             after_echo = session.output.find(echoed, begin) + len(echoed)
+            if interrupt_pid is not None:
+                print(guest_suspend(debug_kernel if args.gdb_log else kernel,
+                                    debug_port, interrupt_pid), flush=True)
+                session.send_raw(b"\x03")
             if not session.read_until(done + b"\n", timeout=15, start_offset=after_echo):
                 raise TimeoutError(f"missing interactive output: {command}; {session.output[begin:]!r}")
             done_end = session.output.find(done + b"\n", after_echo) + len(done) + 1
             if not session.read_until(marker, timeout=15, start_offset=done_end):
                 raise TimeoutError(f"missing interactive prompt after: {command}")
+            if ready is not None and not session.read_until(ready, timeout=15, start_offset=after_echo):
+                raise TimeoutError(f"missing child readiness after: {command}")
             return session.output[after_echo:]
 
         run_job_cases(interactive, record)
+        run_wait_cases(interactive, record)
 
         output = interactive("echo D4_EXTERNAL")
         record("dash interactive external command", b"D4_EXTERNAL" in output)

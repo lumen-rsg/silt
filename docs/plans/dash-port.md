@@ -375,6 +375,20 @@ shared test driver now enforces ttyd's full framed-line limit and prompt return.
 D4 remains open. Next: caught-signal interruption of shell waits, then pipeline
 trap ordering and resource exhaustion.
 
+Wait-interruption follow-up, 2026-09-13: fourteen additional shared checks
+observe Dash blocked in signal suspension before sending Ctrl-C. They cover
+PID/all/multiple/job-selector waits, ordered trap and return status, repeated
+mask restoration, retained children, and child termination from the trap.
+[The wait-interruption record](../architecture/d4-wait-interruption.md) retains
+failed fixture attempts, the signal-zero probing gap and a rejected negative
+control. All five host/reference gates pass; sixteen Linux runs pass all 34
+shared cases. The frozen target matrix passed **165/165 on 1/4/8/8/8/8 CPUs**,
+with four consecutive SMP-8 runs, 54 observed wait interruptions, 24 terminal
+cycles and 24 service crashes. The kernel/rootfs bytes are unchanged; the target
+gate now requires read-only GDB observation before signal delivery. This closes
+the bounded caught-SIGINT suspended-wait slice. D4 remains open; foreground
+pipeline stop/continue and trap ordering are next.
+
 ## Milestone D5: `/bin/sh` release
 
 - Run upstream dash tests on Linux as the reference and under Neva/QEMU as the

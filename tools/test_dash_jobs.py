@@ -10,6 +10,8 @@ import sys
 import time
 
 from dash_job_cases import frame_command, run_job_cases
+from dash_wait_cases import run_wait_cases
+from wait_observer import linux_suspend
 
 
 def main():
@@ -36,7 +38,7 @@ def main():
                 output += data.replace(b"\r", b"")
         return output.index(marker, start) + len(marker)
 
-    def command(text):
+    def command(text, interrupt_pid=None, ready=None):
         nonlocal sequence
         sequence += 1
         done = f"JT_DONE_{sequence}"
@@ -44,8 +46,14 @@ def main():
         start = len(output)
         os.write(descriptor, text.encode() + b"\n")
         begin = expect(text.encode() + b"\n", start)
+        if interrupt_pid is not None:
+            assert interrupt_pid == pid
+            print(linux_suspend(pid), flush=True)
+            os.write(descriptor, b"\x03")
         end = expect(done.encode() + b"\n", begin)
         expect(b"JT> ", end)
+        if ready is not None:
+            expect(ready, begin)
         return output[begin:end]
 
     def record(name, passed, detail=""):
@@ -55,6 +63,7 @@ def main():
     try:
         expect(b"JT> ", 0)
         run_job_cases(command, record)
+        run_wait_cases(command, record)
         print(f"Linux reference job/trap cases: {sum(checks)} passed, {checks.count(False)} failed")
     finally:
         if len(sys.argv) > 2:
