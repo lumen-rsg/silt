@@ -339,6 +339,29 @@ four service crashes passed (269/269); logs are `build/d4-commit-refresh.log` an
 `build/d4-commit-refresh.uart.log`. This supplements the frozen six-run matrix
 without relabeling its artifact identity.
 
+ASID lifetime follow-up, 2026-09-13: Neva `227fcce` reserves each user tag until
+its address space is detached from all CPUs and invalidation completes. Silt's
+`check-pager-smp asid` mode keeps five private same-address watchers alive across
+272 transient child lifetimes and verifies the parent and children remain
+isolated. The rootfs runner checks the fixture marker and exit status.
+
+The final frozen matrix passed **271/271 on 1/4/8/8/8/8 CPUs**, including four
+consecutive SMP-8 passes, 192 terminal cycles and 24 injected service crashes.
+Neva's 35 host tests, Silt's four host/reference checks, and normal plus VM
+allocation-failure 1/4/8-CPU matrices passed. The tested rootfs SHA-256 is
+`7c272db0aaae4d9107428e332892e0ddd9034bbebcf4da7af367fc5722a4551a`.
+Neva's `docs/architecture/d4-asid-lifetime.md` records the protocol, exact kernel
+identity and retained logs in `build-meson/d4-asid-v3/`.
+
+Earlier fixture attempts exposed the eight-process session quota and the
+16-executable FSD binding limit; both failed attempts and an unchanged-baseline
+control are retained in that evidence record. Five watchers fit the process
+quota, and sharing the existing pager fixture image avoids another filesystem
+binding. The FSD limit remains a separate resource boundary. These are native
+model and QEMU results, not physical ARM qualification or attribution of every
+historical failure. Next: broader upstream-compatible job/trap conformance.
+D4 remains open.
+
 ## Milestone D5: `/bin/sh` release
 
 - Run upstream dash tests on Linux as the reference and under Neva/QEMU as the

@@ -365,6 +365,10 @@ def main() -> int:
             b"D4_PAGER_SMP: concurrent cold RX faults PASS",
         ), "SMP pager request coalescing")
         run("status", (b"status=0",), "SMP pager status")
+        run("check-pager-smp asid", (
+            b"D4_ASID: long-lived owners across 272 fork lifetimes PASS",
+        ), "SMP ASID lifetime isolation", timeout=180)
+        run("status", (b"status=0",), "SMP ASID status")
         run("check-pipes", (
             b"D4_PIPES: kill/fault/raw-exit drain PASS",
             b"D4_PIPES: blocked EOF/EPIPE PASS",
