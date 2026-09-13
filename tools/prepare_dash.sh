@@ -6,7 +6,7 @@ version=0.5.13.5
 archive_name=dash-${version}.tar.gz
 source_url=http://gondor.apana.org.au/~herbert/dash/files/${archive_name}
 expected_sha=40090101a2a491f13e901d3d48e90414f26634628b9bfff35ff540363c227a7d
-prepared_marker=${expected_sha}:patchset-8
+prepared_marker=${expected_sha}:patchset-10
 cache_dir=${project_root}/subprojects/packagecache
 archive=${cache_dir}/${archive_name}
 target=${project_root}/vendor/dash-${version}
@@ -47,6 +47,10 @@ patch -d "${temporary}" -p1 \
     < "${project_root}/ports/dash/patches/0002-bracket-silt-pipelines.patch"
 patch -d "${temporary}" -p1 \
     < "${project_root}/ports/dash/patches/0003-honor-deferred-input-interrupt.patch"
+patch -d "${temporary}" -p1 \
+    < "${project_root}/ports/dash/patches/0004-unwind-pipeline-construction.patch"
+patch -d "${temporary}" -p1 \
+    < "${project_root}/ports/dash/patches/0005-enable-interrupts-during-input-read.patch"
 (
     cd "${temporary}"
     ./configure --without-libedit --disable-tee --disable-memfd-create

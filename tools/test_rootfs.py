@@ -13,6 +13,7 @@ import shutil
 from dash_job_cases import frame_command, run_job_cases
 from dash_wait_cases import run_wait_cases
 from dash_pipeline_cases import drive_terminal, run_pipeline_cases
+from dash_resource_cases import run_resource_cases
 from wait_observer import guest_suspend
 
 
@@ -69,9 +70,13 @@ def main() -> int:
     parser.add_argument("--gdb-log", type=Path, help="read-only guest snapshot on timeout")
     parser.add_argument("--terminal-cycles", type=int, default=1,
                         help="repeat the background/foreground termios sequence (1-128)")
+    parser.add_argument("--prompt-interrupts", type=int, default=160,
+                        help="repeat Ctrl-C at the interactive prompt (1-10000)")
     args = parser.parse_args()
     if not 1 <= args.terminal_cycles <= 128:
         parser.error("--terminal-cycles must be between 1 and 128")
+    if not 1 <= args.prompt_interrupts <= 10000:
+        parser.error("--prompt-interrupts must be between 1 and 10000")
 
     if shutil.which("gdb") is None:
         parser.error("the wait/trap gate requires GDB with AArch64 and Python support")
@@ -366,6 +371,9 @@ def main() -> int:
             b"D4_CLEANUP: background write/attributes/foreground capacity PASS",
         ), "Silt interrupted-operation cleanup", timeout=180, stop_on_timeout=True)
         run("status", (b"status=0",), "Silt cleanup status")
+        run("check-cleanup quota", (b"D4_RESOURCE: quota EAGAIN/reap/refill/handle capacity PASS",),
+            "Silt process quota rollback", timeout=90)
+        run("status", (b"status=0",), "Silt process quota status")
         run("check-faults", (b"D4_FAULTS: typed wait/default/ignore/block/catch/nested/escape PASS",),
             "Silt synchronous fault signal status")
         run("status", (b"status=0",), "Silt fault status checks")
@@ -404,7 +412,8 @@ def main() -> int:
         session.read_until(b"D4> ", timeout=15, start_offset=ready_end)
 
         command_sequence = 0
-        def interactive(command: str, marker: bytes = b"D4> ", interrupt_pid=None, ready=None, steps=()) -> bytes:
+        def interactive(command: str, marker: bytes = b"D4> ", interrupt_pid=None,
+                        ready=None, steps=(), rejected=False, reject_after=None) -> bytes:
             nonlocal command_sequence
             command_sequence += 1
             begin = len(session.output)
@@ -425,6 +434,13 @@ def main() -> int:
                 print(guest_suspend(debug_kernel if args.gdb_log else kernel,
                                     debug_port, interrupt_pid), flush=True)
                 session.send_raw(b"\x03")
+            if rejected:
+                if not session.read_until(b"Cannot fork\n", timeout=15, start_offset=after_echo):
+                    raise TimeoutError(f"missing fork rejection: {session.output[after_echo:]!r}")
+                failure_end = session.output.find(b"Cannot fork\n", after_echo) + len(b"Cannot fork\n")
+                if not session.read_until(marker, timeout=15, start_offset=failure_end):
+                    raise TimeoutError(f"missing rejection prompt: {session.output[after_echo:]!r}")
+                return session.output[after_echo:]
             if not session.read_until(done + b"\n", timeout=15, start_offset=after_echo):
                 raise TimeoutError(f"missing interactive output: {command}; {session.output[begin:]!r}")
             done_end = session.output.find(done + b"\n", after_echo) + len(done) + 1
@@ -437,6 +453,14 @@ def main() -> int:
         run_job_cases(interactive, record)
         run_wait_cases(interactive, record)
         run_pipeline_cases(interactive, record)
+        def inherited_descriptors():
+            output = interactive('check-cleanup fds')
+            matches = re.findall(rb'(?:^|\n)RX_FDS=(\d+)\n', output)
+            if len(matches) != 1:
+                raise AssertionError(f"missing inherited descriptor count: {output!r}")
+            return int(matches[0])
+
+        run_resource_cases(interactive, record, inherited_descriptors, suspended=True)
 
         output = interactive("echo D4_EXTERNAL")
         record("dash interactive external command", b"D4_EXTERNAL" in output)
@@ -490,13 +514,14 @@ def main() -> int:
             start = len(session.output)
             session.send_raw(b"\x03")
             record(f"dash prompt interrupt {attempt + 1}", session.read_until(b"D4> ", timeout=15, start_offset=start))
-        for attempt in range(160):
+        for attempt in range(args.prompt_interrupts):
             start = len(session.output)
             session.send_raw(b"\x03")
             if not session.read_until(b"D4> ", timeout=15, start_offset=start):
                 raise TimeoutError(f"dash repeated prompt interrupt {attempt + 1} failed")
         output = interactive("printf 'D4_INTERRUPT_STRESS_ALIVE\\n'")
-        record("dash survives 160 repeated prompt interrupts", b"D4_INTERRUPT_STRESS_ALIVE\n" in output)
+        record(f"dash survives {args.prompt_interrupts} repeated prompt interrupts",
+               b"D4_INTERRUPT_STRESS_ALIVE\n" in output)
         output = interactive("read value &")
         for attempt in range(5):
             output = interactive("jobs")

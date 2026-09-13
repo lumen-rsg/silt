@@ -1,0 +1,130 @@
+--- a/src/eval.c
++++ b/src/eval.c
+@@ -569,7 +569,11 @@
+ 	struct job *jp;
+ 	struct nodelist *lp;
+ 	int pipelen;
+-	int prevfd;
++	int volatile prevfd;
++	int volatile readfd = -1;
++	int volatile writefd = -1;
++	struct jmploc jmploc;
++	struct jmploc *savehandler = handler;
+ 	int pip[2];
+ 	int status = 0;
+ 
+@@ -581,18 +585,33 @@
+ 	INTOFF;
+ 	jp = makejob(pipelen);
+ 	prevfd = -1;
++	if (setjmp(jmploc.loc)) {
++		// forkshell raises an exception on admission failure. Retain local
++		// pipe ownership until construction commits or this handler runs.
++		handler = savehandler;
++		if (prevfd >= 0)
++			close(prevfd);
++		if (readfd >= 0)
++			close(readfd);
++		if (writefd >= 0)
++			close(writefd);
++		abortjob(jp);
++		exraise(exception);
++	}
++	handler = &jmploc;
+ 	silt_pipeline_begin();
+ 	for (lp = n->npipe.cmdlist ; lp ; lp = lp->next) {
+ 		prehash(lp->n);
+ 		pip[1] = -1;
+ 		if (lp->next) {
+ 			if (pipe(pip) < 0) {
+-				close(prevfd);
+-				silt_pipeline_abort();
+ 				sh_error("Pipe call failed");
+ 			}
++			readfd = pip[0];
++			writefd = pip[1];
+ 		}
+ 		if (forkshell(jp, lp->n, n->npipe.backgnd) == 0) {
++			handler = savehandler;
+ 			INTON;
+ 			if (pip[1] >= 0) {
+ 				close(pip[0]);
+@@ -611,9 +630,13 @@
+ 		}
+ 		if (prevfd >= 0)
+ 			close(prevfd);
+-		prevfd = pip[0];
+-		close(pip[1]);
+-	}
++		prevfd = readfd;
++		readfd = -1;
++		if (writefd >= 0)
++			close(writefd);
++		writefd = -1;
++	}
++	handler = savehandler;
+ 	silt_pipeline_end();
+ 	if (n->npipe.backgnd == 0) {
+ 		status = waitforjob(jp);
+--- a/src/jobs.c
++++ b/src/jobs.c
+@@ -606,6 +606,39 @@
+ }
+ 
+ 
++void
++abortjob(struct job *jp)
++{
++	int restore;
++	int i;
++	int status;
++
++	silt_pipeline_abort();
++	if (!jp || !jp->used)
++		return;
++	// Linux stages can run before construction finishes. Terminate and
++	// reap them before restoring the terminal, so no late child handoff
++	// can steal it back. Silt's suspended stages were already reaped above.
++	for (i = 0; i < jp->nprocs; i++)
++		(void)kill(jp->ps[i].pid, SIGKILL);
++	for (i = 0; i < jp->nprocs; i++) {
++		while (waitpid(jp->ps[i].pid, &status, 0) < 0 && errno == EINTR)
++			;
++	}
++	restore = 0;
++#if JOBS
++	restore = jp->jobctl && !shlvl;
++#endif
++	freejob(jp);
++#if JOBS
++	if (restore)
++		xxtcsetpgrp(rootpid);
++#else
++	(void)restore;
++#endif
++}
++
++
+ 
+ int
+ waitcmd(int argc, char **argv)
+@@ -936,8 +969,7 @@
+ {
+ 	if (pid < 0) {
+ 		TRACE(("Fork failed, errno=%d", errno));
+-		if (jp)
+-			freejob(jp);
++		abortjob(jp);
+ 		sh_error("Cannot fork");
+ 		/* NOTREACHED */
+ 	}
+--- a/src/jobs.h
++++ b/src/jobs.h
+@@ -103,6 +103,7 @@
+ void showjobs(struct output *, int);
+ int waitcmd(int, char **);
+ struct job *makejob(int);
++void abortjob(struct job *);
+ int forkshell(struct job *, union node *, int);
+ struct job *vforkexec(union node *n, char **argv, const char *path, int idx);
+ int waitforjob(struct job *);

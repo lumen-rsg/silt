@@ -5,6 +5,19 @@ an imported upstream test suite; provenance and boundaries are in the D4 record.
 """
 
 
+import time
+
+
+def poll_command(command, text, ready, timeout=5):
+    """Observe asynchronous job state within a time budget, not a poll count."""
+    deadline = time.monotonic() + timeout
+    while True:
+        output = command(text).replace(b"\r", b"")
+        if ready(output) or time.monotonic() >= deadline:
+            return output
+        time.sleep(0.01)
+
+
 def frame_command(command, done):
     suffix = (" " if command.rstrip().endswith("&") else "; ") + "printf '" + done + "\\n'"
     framed = command + suffix
@@ -74,10 +87,7 @@ def run_job_cases(command, record):
         check("current and previous job selection",
               "kill -STOP %+; s=$?; kill -STOP %-; echo JT_SELECT=$s:$?",
               "JT_SELECT=0:0")
-        for _ in range(16):
-            output = command("jobs").replace(b"\r", b"")
-            if output.count(b"Stopped") == 2:
-                break
+        output = poll_command(command, "jobs", lambda result: result.count(b"Stopped") == 2)
         passed = output.count(b"Stopped") == 2 and b"d4_alpha" in output and b"d4_beta" in output
         record("job/trap: both selected groups stop", passed, "" if passed else repr(output))
         if not passed:

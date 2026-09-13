@@ -93,6 +93,7 @@ umask
 vfork
 vsnprintf
 wait3
+waitpid
 wcschr
 wctype
 write

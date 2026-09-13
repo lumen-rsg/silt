@@ -1,6 +1,7 @@
 #include "runtime.h"
 #include "../libc/cleanup.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <silt_pipeline.h>
@@ -341,6 +342,46 @@ static uint32_t handle_number(const char* text) {
     return (uint32_t)value;
 }
 
+static int resource_quota_checks(void) {
+    int baseline = capacity();
+    for (int round = 0; round < 4; round++) {
+        pid_t children[6];
+        int count = 0;
+        int result = 0;
+        for (; count < 6; count++) {
+            pid_t child = fork();
+            if (!child) {
+                for (;;) sys_sleep(1000);
+            }
+            if (child < 0) { result = 70; break; }
+            children[count] = child;
+        }
+        for (int attempt = 0; !result && attempt < 8; attempt++) {
+            errno = 0;
+            pid_t child = fork();
+            if (!child) _exit(71);
+            if (child >= 0) {
+                (void)waitpid(child, NULL, 0);
+                result = 72;
+            } else if (errno != EAGAIN) {
+                result = 73;
+            }
+        }
+        for (int index = 0; index < count; index++) {
+            if (kill(children[index], SIGKILL) < 0) result = 74;
+        }
+        for (int index = 0; index < count; index++) {
+            int status = 0;
+            if (waitpid(children[index], &status, 0) != children[index]
+                || !WIFSIGNALED(status) || WTERMSIG(status) != SIGKILL) result = 75;
+        }
+        if (capacity() != baseline) result = 76;
+        if (result) return result;
+    }
+    neva_println("D4_RESOURCE: quota EAGAIN/reap/refill/handle capacity PASS");
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     if (argc == 4 && !strcmp(argv[1], "exec-check")) {
         uint32_t temporary = handle_number(argv[2]);
@@ -353,6 +394,23 @@ int main(int argc, char* argv[]) {
     NevaStartupHandleV1 process;
     if (neva_startup_find("process", &process) != NEVA_STATUS_OK) return 30;
     g_process = process.handle;
+    if (argc == 2 && !strcmp(argv[1], "quota")) {
+        int result = resource_quota_checks();
+        if (result) {
+            neva_print("D4_RESOURCE: FAIL code=");
+            neva_print_int(result);
+            neva_putc('\n');
+        }
+        return result;
+    }
+    if (argc == 2 && !strcmp(argv[1], "fds")) {
+        int count = 0;
+        for (int fd = 0; fd < 32; fd++) if (fcntl(fd, F_GETFD) >= 0) count++;
+        neva_print("RX_FDS=");
+        neva_print_int(count);
+        neva_putc('\n');
+        return 0;
+    }
     pid_t cold = fork();
     if (!cold) {
         if (signal(SIGUSR2, cleanup_cold_handler) == SIG_ERR) _exit(48);

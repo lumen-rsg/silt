@@ -402,6 +402,26 @@ The kernel/rootfs bytes remain unchanged. Independently delivered signals to a
 shell with a running foreground job remain separate coverage. D4 remains open; resource-exhaustion behavior and
 recovery are next.
 
+Process-quota follow-up, 2026-09-13: failed partial pipeline creation exposed
+premature terminal handoff and leaked local pipe descriptors. Silt now delays
+handoff until construction commits; Dash unwinds the descriptors and cancels,
+reaps and removes partial jobs before restoring the shell's terminal. Sixty
+shared checks exercise zero/one/three/five available slots, refusal status,
+existing jobs, descriptor recovery and subsequent pipelines. A native fixture
+checks EAGAIN, reaping, refill and capability capacity across four quota cycles.
+The gate also reproduced a deferred SIGINT race between Dash's pending check
+and blocking read. Dash now releases its input guard around that read; an
+injected Linux reference fails on the old binary and verifies the correction.
+Final verification: all seven Silt host gates and 48 frozen Linux reference
+runs pass; fresh-media QEMU runs on 1/4/8/8/8/8 CPUs each pass 247/247. The
+first SMP-8 run includes 10,000 prompt interrupts, the others 160 each. Every
+run includes four terminal cycles and four service crashes; artifact and
+per-run symbol hashes match. The Neva kernel is unchanged.
+[The resource-recovery record](../architecture/d4-resource-recovery.md) retains
+the old-artifact failures, Linux injection boundaries and final verification.
+D4 remains open. Next: descriptor/pipe allocation refusal and recovery in other
+construction phases; full terminal/PTY session rules also remain open.
+
 ## Milestone D5: `/bin/sh` release
 
 - Run upstream dash tests on Linux as the reference and under Neva/QEMU as the

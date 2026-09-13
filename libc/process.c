@@ -28,6 +28,7 @@ static SiltChild g_children[SILT_CHILD_MAX];
 static uint32_t g_pipeline_group;
 static pid_t g_pipeline_leader;
 static int g_pipeline_active;
+static int g_pipeline_foreground;
 static int g_job_enabled;
 static int g_job_foreground;
 
@@ -43,8 +44,12 @@ void silt_job_finish(int pid) {
     int index = child_index(pid);
     if (index < 0) return;
     if (g_job_enabled && g_job_foreground && g_children[index].group) {
-        if (silt_tty_set_foreground(neva_tty_handle(), g_children[index].group)
-            != NEVA_STATUS_OK) {
+        // Keep the shell foreground until every suspended stage is admitted.
+        // Otherwise a later fork failure leaves the prompt in a dead group.
+        if (g_pipeline_active) {
+            g_pipeline_foreground = 1;
+        } else if (silt_tty_set_foreground(neva_tty_handle(), g_children[index].group)
+                   != NEVA_STATUS_OK) {
             silt_pipeline_abort();
             g_job_enabled = 0;
             return;
@@ -64,6 +69,7 @@ static uint32_t session_remote(void) {
 void silt_pipeline_begin(void) {
     if (g_pipeline_active || g_pipeline_group) silt_pipeline_abort();
     g_pipeline_active = 1;
+    g_pipeline_foreground = 0;
 }
 
 static void child_discard_suspended(int index) {
@@ -77,6 +83,12 @@ static void child_discard_suspended(int index) {
 }
 
 void silt_pipeline_end(void) {
+    if (g_pipeline_foreground && g_pipeline_group
+        && silt_tty_set_foreground(neva_tty_handle(), g_pipeline_group) != NEVA_STATUS_OK) {
+        silt_pipeline_abort();
+        return;
+    }
+    g_pipeline_foreground = 0;
     g_pipeline_active = 0;
     for (int index = 0; index < SILT_CHILD_MAX; index++) {
         if (!g_children[index].process || !g_children[index].suspended) continue;
@@ -95,6 +107,8 @@ void silt_pipeline_end(void) {
 
 void silt_pipeline_abort(void) {
     g_pipeline_active = 0;
+    g_pipeline_foreground = 0;
+    g_job_enabled = 0;
     for (int index = 0; index < SILT_CHILD_MAX; index++) {
         child_discard_suspended(index);
     }
@@ -115,6 +129,7 @@ static void children_clear_in_child(void) {
     g_pipeline_group = NEVA_INVALID_HANDLE;
     g_pipeline_leader = 0;
     g_pipeline_active = 0;
+    g_pipeline_foreground = 0;
     g_job_enabled = 0;
 }
 

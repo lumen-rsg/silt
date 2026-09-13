@@ -56,8 +56,9 @@ meson compile -C build
 The root filesystem is written to `build/silt-rootfs.img`. Boot it through the
 automated four-vCPU acceptance runner with GDB (AArch64 and Python support)
 available on PATH. The wait/trap gate uses it to observe blocked waits before
-sending terminal signals. The same gate runs 54 shared Linux/Silt job, wait and
-[pipeline/trap checks](docs/architecture/d4-foreground-pipelines.md):
+sending terminal signals. The same gate runs 114 shared job, wait, pipeline and
+[resource-recovery checks](docs/architecture/d4-resource-recovery.md). The Linux
+resource reference injects fork failures; Silt exercises its real session quota:
 
 ```sh
 meson compile -C build rootfs-qemu-test

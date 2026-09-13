@@ -1,0 +1,17 @@
+--- a/src/input.c
++++ b/src/input.c
+@@ -357,8 +357,13 @@
+ 		}
+ 	}
+ 
+-	if (nr > 0)
++	if (nr > 0) {
++		// Buffer metadata is consistent here. A signal after int_pending()
++		// must escape the blocking read instead of only setting that flag.
++		INTON;
+ 		nr = read(fd, buf, nr);
++		INTOFF;
++	}
+ 
+ 	if (nr < 0) {
+ 		if (errno == EINTR && !(basepf.prev && pending_sig))

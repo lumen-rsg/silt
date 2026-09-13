@@ -23,6 +23,12 @@ the eventual Event wait. The scheduler rejects a changed epoch with EINTR
 before consuming or blocking, closing the readiness-query/wait interruption
 gap. Pipe waits use the same mechanism.
 
+Dash releases its input-buffer interrupt guard around the blocking read. This
+lets a SIGINT between its pending-flag check and libc operation entry escape
+immediately, rather than leaving a deferred flag beside an input wait
+that missed that signal. The deterministic Linux injection and SMP prompt stress are
+recorded in [D4 resource recovery](d4-resource-recovery.md).
+
 Caught signals do not detach an in-flight IPC call, receive or async wait from
 its reply owner. Delivery remains pending until reply, timeout or peer teardown
 completes that wait. Event readiness waits remain interruptible. Consequently an
@@ -144,8 +150,10 @@ F_SETFL explicitly returns ENOTSUP. See Neva's
   caught SIGINT in observed suspended waits and retained-child reaping. Twenty
   [foreground-pipeline checks](d4-foreground-pipelines.md) cover two-member
   stop/continue, per-member INT/EXIT ordering, last-member status and the shell's
-  foreground SIGINT trap. Broader signal-arrival cases and resource exhaustion
-  remain open. The bounded libc interruption-cleanup evidence remains in Neva's
+  foreground SIGINT trap. Sixty [resource-recovery checks](d4-resource-recovery.md)
+  cover process-quota refusal, partial pipeline cleanup, terminal recovery and
+  existing-job preservation. Broader signal-arrival cases and other resource
+  failures remain open. The bounded libc interruption-cleanup evidence remains in Neva's
   `docs/architecture/d4-interruption-cleanup.md`.
 - Subsequent pager retry and lifetime-owned ASID corrections passed consecutive
   SMP-8 matrices; see Neva's `d4-smp-retest-2026-09-13.md` and

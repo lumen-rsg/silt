@@ -1,6 +1,9 @@
 """Shared foreground pipeline lifecycle and per-member trap ordering checks."""
 
 
+from dash_job_cases import poll_command
+
+
 def drive_terminal(expect, send, start, steps):
     """Await every acknowledgement in a phase before delivering its input."""
     for markers, data in steps:
@@ -34,11 +37,7 @@ def run_pipeline_cases(command, record):
               b"PT_STOP=TSTP" in output.splitlines())
 
         def stopped():
-            for _ in range(16):
-                result = command("jobs -l")
-                if b"Stopped" in result:
-                    return result
-            return result
+            return poll_command(command, "jobs -l", lambda result: b"Stopped" in result)
 
         output = stopped()
         check(label + "stopped job lists both members", output,

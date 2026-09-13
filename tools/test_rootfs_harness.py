@@ -2,11 +2,15 @@
 """Host regressions for UART acceptance framing; no QEMU required."""
 
 import unittest
+import os
+import select
+import signal
 from types import SimpleNamespace
 
 from test_rootfs import command_output
 from dash_job_cases import frame_command
 from dash_pipeline_cases import drive_terminal
+from linux_session import terminate_session
 
 
 class Session:
@@ -66,6 +70,39 @@ class FramingTest(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             drive_terminal(expect, sent.append, 0, [([b"A", b"B"], b"interrupt")])
         self.assertEqual(sent, [])
+
+    def test_private_session_cleanup_includes_background_group(self):
+        reader, writer = os.pipe()
+        child = os.fork()
+        if not child:
+            os.close(reader)
+            os.setsid()
+            background = os.fork()
+            if not background:
+                os.setpgid(0, 0)
+                os.write(writer, str(os.getpid()).encode())
+            os.close(writer)
+            while True:
+                signal.pause()
+        os.close(writer)
+        descriptor = None
+        try:
+            self.assertTrue(select.select([reader], [], [], 5)[0])
+            background = int(os.read(reader, 32))
+            descriptor = os.pidfd_open(background)
+            self.assertNotEqual(os.getpgid(background), child)
+            terminated = terminate_session(child)
+            self.assertIn(child, terminated)
+            self.assertIn(background, terminated)
+            self.assertTrue(select.select([descriptor], [], [], 5)[0])
+            # The runner belongs to a different session and remains untouched.
+            self.assertNotIn(os.getpid(), terminated)
+        finally:
+            terminate_session(child)
+            os.waitpid(child, 0)
+            os.close(reader)
+            if descriptor is not None:
+                os.close(descriptor)
 
     def test_echo_is_not_a_result(self):
         session = Session([b"echo PASS\n1000$ "])
