@@ -239,6 +239,8 @@ char* strerror(int error) {
         case EINVAL: return "invalid argument";
         case EIO: return "I/O error";
         case ENOENT: return "not found";
+        case EMFILE: return "Too many open files";
+        case ENFILE: return "Too many open files in system";
         case ENOMEM: return "out of memory";
         case ENOSYS: return "not implemented";
         case ERANGE: return "out of range";

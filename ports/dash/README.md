@@ -17,6 +17,12 @@ Patch 0003 lets an input read leave dash's interrupt-deferred section when a
 SIGINT is pending. The pinned source otherwise retries EINTR indefinitely in
 that section. This was reproduced with its Linux no-libedit build as well as
 Silt; `tools/test_dash_interrupt.py` checks three successive Linux PTY interrupts.
-The source preparation script applies all three patches to the checked archive.
+Patch 0004 unwinds failed pipeline construction; patch 0005 releases the
+input guard around blocking reads to close the pending-check/read SIGINT race.
+Patch 0006 preserves redirection targets and closes new sources when saving a
+target fails, and permits closing-only `exec` redirections without a spare fd.
+The source preparation script applies all six patches to the checked archive
+(patchset 11). See `docs/architecture/d4-descriptor-recovery.md` for the bounded
+descriptor-exhaustion acceptance.
 
 See `docs/plans/dash-port.md` for the enablement and acceptance sequence.

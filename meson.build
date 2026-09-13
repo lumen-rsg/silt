@@ -182,6 +182,13 @@ test(
 )
 
 test(
+  'dash-linux-descriptor-reference',
+  python,
+  args: [files('tools/test_dash_descriptors.py'), source_root / 'vendor/dash-0.5.13.5/src/dash'],
+  timeout: 120,
+)
+
+test(
   'dash-linux-read-signal-reference',
   python,
   args: [files('tools/test_dash_read_signal.py'), source_root / 'vendor/dash-0.5.13.5/src/dash'],

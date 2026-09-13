@@ -7,6 +7,7 @@
 #include <silt_pipeline.h>
 #include <stdio.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <termios.h>
 
 #define ROUNDS 160
@@ -382,6 +383,89 @@ static int resource_quota_checks(void) {
     return 0;
 }
 
+static int descriptor_resource_checks(void) {
+    int baseline = capacity();
+    for (int round = 0; round < 4; round++) {
+        // PrivateTmp currently has one file slot, shared with earlier cases.
+        const char* existing = "/tmp/dash.out";
+        char absent[64];
+        snprintf(absent, sizeof(absent), "/tmp/d4-fd-absent-%d-%d", getpid(), round);
+        int file = open(existing, O_RDWR | O_CREAT | O_TRUNC, 0600);
+        if (file < 0 || write(file, "keep", 4) != 4) {
+            neva_print("D4_DESCRIPTOR_SETUP: fd=");
+            neva_print_int(file);
+            neva_print(" errno=");
+            neva_print_int(errno);
+            neva_putc('\n');
+            return 100;
+        }
+        int held[32], count = 0;
+        while (count < 32) {
+            int fd = dup(STDOUT_FILENO);
+            if (fd < 0) break;
+            held[count++] = fd;
+        }
+        if (!count || errno != EMFILE) return 101;
+        if (open(existing, O_WRONLY | O_TRUNC) != -1 || errno != EMFILE) return 102;
+        char bytes[4];
+        if (lseek(file, 0, SEEK_SET) != 0 || read(file, bytes, 4) != 4
+            || memcmp(bytes, "keep", 4)) return 103;
+        if (open(absent, O_WRONLY | O_CREAT, 0600) != -1 || errno != EMFILE) return 104;
+        if (openat(AT_FDCWD, existing, O_WRONLY | O_TRUNC) != -1 || errno != EMFILE) return 105;
+        for (int slots = 0; slots <= 1; slots++) {
+            if (slots && close(held[--count]) < 0) return 106;
+            int handles_before = capacity();
+            for (int attempt = 0; attempt < 8; attempt++) {
+                int ends[2] = { -7, -9 };
+                if (pipe(ends) != -1 || errno != EMFILE || ends[0] != -7 || ends[1] != -9) return 107;
+            }
+            if (capacity() != handles_before) return 108;
+        }
+        // The second released descriptor must admit both endpoints again.
+        if (close(held[--count]) < 0) return 109;
+        int ends[2];
+        if (pipe(ends) < 0 || write(ends[1], "P", 1) != 1 || read(ends[0], bytes, 1) != 1
+            || bytes[0] != 'P' || close(ends[1]) < 0 || read(ends[0], bytes, 1) != 0
+            || close(ends[0]) < 0) return 110;
+        for (int i = 0; i < count; i++) if (close(held[i]) < 0) return 111;
+        if (lseek(file, 0, SEEK_SET) != 0 || read(file, bytes, 4) != 4
+            || memcmp(bytes, "keep", 4) || close(file) < 0) return 112;
+        struct stat info;
+        if (stat(absent, &info) != -1 || errno != ENOENT) return 113;
+        if (capacity() != baseline) return 114;
+    }
+    neva_println("D4_DESCRIPTORS: rejected open preserves files/pipe EMFILE/refill PASS");
+    for (int command = 0; command < 2; command++) {
+        int operation = command ? F_DUPFD_CLOEXEC : F_DUPFD;
+        if (fcntl(1, operation, -1) != -1 || errno != EINVAL
+            || fcntl(1, operation, 32) != -1 || errno != EINVAL) return 115;
+        int fd = fcntl(1, operation, 31);
+        if (fd != 31 || fcntl(fd, F_GETFD) != (command ? FD_CLOEXEC : 0)
+            || fcntl(1, operation, 31) != -1 || errno != EMFILE || close(fd) < 0) return 116;
+    }
+    // Fill independent descriptions, not just aliases to stdout.
+    int files[32], count = 0;
+    while (count < 32) {
+        int fd = open("/dev/null", O_RDWR);
+        if (fd < 0) break;
+        files[count++] = fd;
+    }
+    if (!count || errno != EMFILE) return 117;
+    for (int i = 0; i < count; i++) if (close(files[i]) < 0) return 118;
+    if (capacity() != baseline) return 119;
+    neva_println("D4_DESCRIPTORS: F_DUPFD bounds/flags/description refill PASS");
+    return 0;
+}
+
+static int descriptor_shell(void) {
+    // Leave fd 10 for Dash's CLOEXEC job-control terminal. The interactive
+    // cases occupy and release 3..9 themselves, using real descriptor limits.
+    for (int fd = 11; fd < 32; fd++) if (dup2(STDOUT_FILENO, fd) != fd) return 120;
+    char* args[] = { "dash", "-i", NULL };
+    execve("/bin/dash", args, environ);
+    return 121;
+}
+
 int main(int argc, char* argv[]) {
     if (argc == 4 && !strcmp(argv[1], "exec-check")) {
         uint32_t temporary = handle_number(argv[2]);
@@ -394,6 +478,24 @@ int main(int argc, char* argv[]) {
     NevaStartupHandleV1 process;
     if (neva_startup_find("process", &process) != NEVA_STATUS_OK) return 30;
     g_process = process.handle;
+    if (argc == 2 && !strcmp(argv[1], "fd-shell")) return descriptor_shell();
+    if (argc == 2 && !strcmp(argv[1], "copy")) {
+        char bytes[64];
+        ssize_t count;
+        while ((count = read(0, bytes, sizeof(bytes))) > 0) {
+            if (write(1, bytes, (size_t)count) != count) return 122;
+        }
+        return count < 0 ? 123 : 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "descriptors")) {
+        int result = descriptor_resource_checks();
+        if (result) {
+            neva_print("D4_DESCRIPTORS: FAIL code=");
+            neva_print_int(result);
+            neva_putc('\n');
+        }
+        return result;
+    }
     if (argc == 2 && !strcmp(argv[1], "quota")) {
         int result = resource_quota_checks();
         if (result) {

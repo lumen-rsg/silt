@@ -244,6 +244,14 @@ static int descriptor_allocate_from(int description, int minimum, int flags) {
     return -1;
 }
 
+static int descriptor_capacity(int required) {
+    for (int descriptor = 0; descriptor < SILT_DESCRIPTOR_MAX; descriptor++) {
+        if (!g_descriptors[descriptor].description && --required == 0) return 0;
+    }
+    errno = EMFILE;
+    return -1;
+}
+
 static void descriptors_initialize(void) {
     if (g_initialized) return;
     g_initialized = 1;
@@ -326,6 +334,9 @@ int pipe(int descriptors[2]) {
         return -1;
     }
     descriptors_initialize();
+    // Refuse local exhaustion before asking the kernel for two endpoints.
+    // The caller's array is published only after both descriptors exist.
+    if (descriptor_capacity(2) < 0) return -1;
     uint32_t read_handle, write_handle;
     NevaStatus status = sys_byte_stream_create(&read_handle, &write_handle);
     if (status != NEVA_STATUS_OK) {
@@ -626,6 +637,10 @@ static int open_normalized(const char* path, int flags, mode_t mode) {
         errno = EINVAL;
         return -1;
     }
+    // A full descriptor table must not create or truncate the caller's file.
+    // Each live description owns at least one descriptor, so this also
+    // guarantees a free description slot at this admission check.
+    if (descriptor_capacity(1) < 0) return -1;
     if (strcmp(path, "/dev/null") == 0 || strcmp(path, "/dev/tty") == 0) {
         SiltDescriptionKind kind = strcmp(path, "/dev/null") == 0
             ? SILT_DESCRIPTION_NULL : SILT_DESCRIPTION_TTY;
@@ -945,6 +960,11 @@ int fcntl(int descriptor, int command, ...) {
         result = 0;
     } else if (command == F_DUPFD || command == F_DUPFD_CLOEXEC) {
         int minimum = va_arg(arguments, int);
+        if (minimum < 0 || minimum >= SILT_DESCRIPTOR_MAX) {
+            va_end(arguments);
+            errno = EINVAL;
+            return -1;
+        }
         int index = (int)(description - g_descriptions);
         result = descriptor_allocate_from(index, minimum,
             command == F_DUPFD_CLOEXEC ? FD_CLOEXEC : 0);

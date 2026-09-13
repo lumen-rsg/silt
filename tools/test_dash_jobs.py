@@ -15,9 +15,10 @@ from dash_pipeline_cases import drive_terminal, run_pipeline_cases
 from wait_observer import linux_suspend
 from linux_session import terminate_session
 from dash_resource_cases import run_resource_cases
+from dash_descriptor_cases import run_descriptor_cases
 
 
-def main(resource_control=None, resource_library=None):
+def main(resource_control=None, resource_library=None, descriptor_mode=False):
     shell = str(Path(sys.argv[1]).resolve())
     pid, descriptor = pty.fork()
     if pid == 0:
@@ -26,6 +27,10 @@ def main(resource_control=None, resource_library=None):
         if resource_control:
             os.environ.update(LD_PRELOAD=str(resource_library), D4_FORK_CONTROL=str(resource_control))
             resource.setrlimit(resource.RLIMIT_NOFILE, (32, 32))
+        if descriptor_mode:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (32, 32))
+            for fd in range(11, 32):
+                os.dup2(1, fd, inheritable=True)
         os.execv(shell, [shell, "-i"])
     output = b""
     sequence = 0
@@ -44,7 +49,8 @@ def main(resource_control=None, resource_library=None):
                 output += data.replace(b"\r", b"")
         return output.index(marker, start) + len(marker)
 
-    def command(text, interrupt_pid=None, ready=None, steps=(), rejected=False, reject_after=None):
+    def command(text, interrupt_pid=None, ready=None, steps=(), rejected=False, reject_after=None,
+                reject_message=b"Cannot fork\n"):
         nonlocal sequence
         sequence += 1
         if resource_control:
@@ -61,7 +67,7 @@ def main(resource_control=None, resource_library=None):
             os.write(descriptor, b"\x03")
         drive_terminal(expect, lambda data: os.write(descriptor, data), begin, steps)
         if rejected:
-            end = expect(b"Cannot fork\n", begin)
+            end = expect(reject_message, begin)
             expect(b"JT> ", end)
             if resource_control and b"RX_INJECTED_FORK\n" not in output[begin:]:
                 raise AssertionError(f"reference failed without the requested fork injection: {output[begin:]!r}")
@@ -78,7 +84,9 @@ def main(resource_control=None, resource_library=None):
 
     try:
         expect(b"JT> ", 0)
-        if resource_control:
+        if descriptor_mode:
+            run_descriptor_cases(command, record, lambda: len(list(Path(f'/proc/{pid}/fd').iterdir())))
+        elif resource_control:
             run_resource_cases(command, record, lambda: len(list(Path(f'/proc/{pid}/fd').iterdir())),
                                suspended=False)
         else:

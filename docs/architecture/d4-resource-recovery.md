@@ -263,9 +263,10 @@ existing source tree. This workspace retains the older trees for the negative co
 
 ## Remaining work
 
-D4 remains open. Descriptor/pipe allocation refusal and address-space or
-capability exhaustion during other construction phases need separate targeted
-acceptance, including failure during terminal transfer or stage resume. This
+D4 remains open. Descriptor/pipe allocation refusal now has a separate
+[acceptance record](d4-descriptor-recovery.md). Address-space and capability
+exhaustion during other construction phases still need targeted acceptance,
+including failure during terminal transfer or stage resume. This
 record does not claim those phases were fault-injected merely because they
 share cleanup code. Signal-zero probing, independently delivered signals to a
 shell with a running foreground job, orphaned-group EIO and full terminal/PTY

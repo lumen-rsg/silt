@@ -28,6 +28,8 @@ lets a SIGINT between its pending-flag check and libc operation entry escape
 immediately, rather than leaving a deferred flag beside an input wait
 that missed that signal. The deterministic Linux injection and SMP prompt stress are
 recorded in [D4 resource recovery](d4-resource-recovery.md).
+[Descriptor recovery](d4-descriptor-recovery.md) covers full-table open/pipe
+refusal, redirection target preservation and permanent closes under exhaustion.
 
 Caught signals do not detach an in-flight IPC call, receive or async wait from
 its reply owner. Delivery remains pending until reply, timeout or peer teardown
@@ -152,7 +154,9 @@ F_SETFL explicitly returns ENOTSUP. See Neva's
   stop/continue, per-member INT/EXIT ordering, last-member status and the shell's
   foreground SIGINT trap. Sixty [resource-recovery checks](d4-resource-recovery.md)
   cover process-quota refusal, partial pipeline cleanup, terminal recovery and
-  existing-job preservation. Broader signal-arrival cases and other resource
+  existing-job preservation. Sixty-one [descriptor-recovery checks](d4-descriptor-recovery.md)
+  cover full-table pipe/open refusal, partial-job cleanup, preserved streams,
+  permanent closes and refill. Broader signal-arrival cases and other resource
   failures remain open. The bounded libc interruption-cleanup evidence remains in Neva's
   `docs/architecture/d4-interruption-cleanup.md`.
 - Subsequent pager retry and lifetime-owned ASID corrections passed consecutive

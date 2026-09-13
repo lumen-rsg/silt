@@ -14,6 +14,7 @@ from dash_job_cases import frame_command, run_job_cases
 from dash_wait_cases import run_wait_cases
 from dash_pipeline_cases import drive_terminal, run_pipeline_cases
 from dash_resource_cases import run_resource_cases
+from dash_descriptor_cases import run_descriptor_cases
 from wait_observer import guest_suspend
 
 
@@ -371,6 +372,11 @@ def main() -> int:
             b"D4_CLEANUP: background write/attributes/foreground capacity PASS",
         ), "Silt interrupted-operation cleanup", timeout=180, stop_on_timeout=True)
         run("status", (b"status=0",), "Silt cleanup status")
+        run("check-cleanup descriptors", (
+            b"D4_DESCRIPTORS: rejected open preserves files/pipe EMFILE/refill PASS",
+            b"D4_DESCRIPTORS: F_DUPFD bounds/flags/description refill PASS",
+        ), "Silt descriptor allocation refusal", timeout=90)
+        run("status", (b"status=0",), "Silt descriptor refusal status")
         run("check-cleanup quota", (b"D4_RESOURCE: quota EAGAIN/reap/refill/handle capacity PASS",),
             "Silt process quota rollback", timeout=90)
         run("status", (b"status=0",), "Silt process quota status")
@@ -413,7 +419,8 @@ def main() -> int:
 
         command_sequence = 0
         def interactive(command: str, marker: bytes = b"D4> ", interrupt_pid=None,
-                        ready=None, steps=(), rejected=False, reject_after=None) -> bytes:
+                        ready=None, steps=(), rejected=False, reject_after=None,
+                        reject_message=b"Cannot fork\n") -> bytes:
             nonlocal command_sequence
             command_sequence += 1
             begin = len(session.output)
@@ -435,9 +442,9 @@ def main() -> int:
                                     debug_port, interrupt_pid), flush=True)
                 session.send_raw(b"\x03")
             if rejected:
-                if not session.read_until(b"Cannot fork\n", timeout=15, start_offset=after_echo):
-                    raise TimeoutError(f"missing fork rejection: {session.output[after_echo:]!r}")
-                failure_end = session.output.find(b"Cannot fork\n", after_echo) + len(b"Cannot fork\n")
+                if not session.read_until(reject_message, timeout=15, start_offset=after_echo):
+                    raise TimeoutError(f"missing {reject_message!r} rejection: {session.output[after_echo:]!r}")
+                failure_end = session.output.find(reject_message, after_echo) + len(reject_message)
                 if not session.read_until(marker, timeout=15, start_offset=failure_end):
                     raise TimeoutError(f"missing rejection prompt: {session.output[after_echo:]!r}")
                 return session.output[after_echo:]
@@ -618,6 +625,25 @@ def main() -> int:
         start = len(session.output)
         session.send("exit")
         record("dash exit restores nsh", session.read_until(runner.PROMPT, timeout=15, start_offset=start))
+
+        # A separate interactive Dash inherits the real high descriptor
+        # occupancy. Preserve 10 for its normal CLOEXEC job-control handle.
+        start = len(session.output)
+        session.send("check-cleanup fd-shell")
+        if not session.read_until(b"$ ", timeout=15, start_offset=start):
+            raise TimeoutError("descriptor shell prompt missing")
+        session.send("PS1='D4> '")
+        session.send("printf 'D4_FD_READY\\n'")
+        if not session.read_until(b"D4_FD_READY\n", timeout=15, start_offset=start):
+            raise TimeoutError("descriptor shell initialization failed")
+        ready_end = session.output.find(b"D4_FD_READY\n", start) + len(b"D4_FD_READY\n")
+        if not session.read_until(b"D4> ", timeout=15, start_offset=ready_end):
+            raise TimeoutError("descriptor shell initialized without prompt")
+        run_descriptor_cases(interactive, record, inherited_descriptors, consumer="check-cleanup copy")
+        start = len(session.output)
+        session.send("exit")
+        record("descriptor shell exit restores nsh",
+               session.read_until(runner.PROMPT, timeout=15, start_offset=start))
 
         print("\n=== Session teardown ===")
         start = len(session.output)

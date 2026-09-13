@@ -1,0 +1,86 @@
+--- a/src/eval.c
++++ b/src/eval.c
+@@ -782,6 +782,7 @@
+ 	int spclbltin;
+ 	int cmd_flag;
+ 	int execcmd;
++	int redirflags;
+ 	int status;
+ 	char **nargv;
+ 	int vflags;
+@@ -873,7 +874,19 @@
+ 	preverrout.fd = 2;
+ 	expredir(cmd->ncmd.redirect);
+ 	redir_stop = pushredir(cmd->ncmd.redirect);
+-	status = redirectsafe(cmd->ncmd.redirect, REDIR_PUSH|REDIR_SAVEFD2);
++	redirflags = REDIR_PUSH|REDIR_SAVEFD2;
++	// Closing-only exec redirections are permanent and cannot need a
++	// rollback copy. They must work even when no spare descriptor exists.
++	if (execcmd && argc == 1 && !cmd->ncmd.assign) {
++		for (argp = cmd->ncmd.redirect; argp; argp = argp->nfile.next) {
++			if ((argp->type != NTOFD && argp->type != NFROMFD) ||
++			    argp->ndup.dupfd != -1)
++				break;
++		}
++		if (!argp)
++			redirflags |= REDIR_CLOSE;
++	}
++	status = redirectsafe(cmd->ncmd.redirect, redirflags);
+ 
+ 	if (unlikely(status)) {
+ bail:
+--- a/src/redir.c
++++ b/src/redir.c
+@@ -114,6 +114,30 @@
+  * stdout, is saved in memory.
+  */
+ 
++// Saving a redirection target must leave that target open on failure.
++// The newly opened source is locally owned until the target has been saved.
++static int
++save_redirect_target(int fd, int source, int owned)
++{
++	struct jmploc guard;
++	struct jmploc *outer = handler;
++	int saved;
++
++	if (setjmp(guard.loc)) {
++		handler = outer;
++		if (owned && source >= 0)
++			close(source);
++		exraise(exception);
++	}
++	handler = &guard;
++	saved = savefd(fd, -1);
++	handler = outer;
++	if (saved >= 0)
++		close(fd);
++	return saved;
++}
++
++
+ void
+ redirect(union node *redir, int flags)
+ {
+@@ -156,8 +180,9 @@
+ 
+ 			if (likely(i == EMPTY)) {
+ 				i = CLOSED;
+-				if (fd != newfd && !closed) {
+-					i = savefd(fd, fd);
++				if (fd != newfd && !closed && !(flags & REDIR_CLOSE)) {
++					i = save_redirect_target(fd, newfd,
++						n->type != NTOFD && n->type != NFROMFD);
+ 					fd = -1;
+ 				}
+ 			}
+--- a/src/redir.h
++++ b/src/redir.h
+@@ -35,6 +35,7 @@
+  */
+ 
+ /* flags passed to redirect */
++#define REDIR_CLOSE 04		/* permanent closing-only exec redirections */
+ #define REDIR_PUSH 01		/* save previous values of file descriptors */
+ #ifdef notyet
+ #define REDIR_BACKQ 02		/* save the command output in memory */

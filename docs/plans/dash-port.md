@@ -422,6 +422,26 @@ the old-artifact failures, Linux injection boundaries and final verification.
 D4 remains open. Next: descriptor/pipe allocation refusal and recovery in other
 construction phases; full terminal/PTY session rules also remain open.
 
+Descriptor-recovery follow-up, 2026-09-13: Silt checks descriptor capacity
+before creating/truncating files or requesting pipe endpoints, rejects invalid
+F_DUPFD minima with EINVAL, and names descriptor-exhaustion errors. Dash now
+preserves original streams and reclaims newly opened sources if saving a
+redirection target fails. Closing-only `exec` redirections can release fds
+without allocating a spare rollback descriptor. Patchset 11 applies these
+changes to both the pinned Linux reference and the Silt build.
+
+Sixty-one shared checks exercise actual 32-descriptor exhaustion with zero,
+one and two free slots, partial pipeline rejection, unrelated-job preservation,
+redirection recovery and a subsequent data pipeline. The native fixture checks
+file preservation, pipe-array/handle rollback, refill and duplication bounds.
+[The descriptor-recovery record](../architecture/d4-descriptor-recovery.md)
+retains the negative controls, fixture corrections and exact runtime evidence.
+Final verification: all eight host gates pass, 64 frozen Linux reference
+runs pass, and fresh-media 1/4/8/8/8/8-vCPU runs each pass **311/311** with four
+terminal cycles, 160 prompt interrupts and four service crashes per run.
+D4 remains open for other construction-phase failures, input-buffer descriptor
+pressure, signal-arrival cases and full terminal/PTY session semantics.
+
 ## Milestone D5: `/bin/sh` release
 
 - Run upstream dash tests on Linux as the reference and under Neva/QEMU as the
