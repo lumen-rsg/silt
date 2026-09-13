@@ -89,17 +89,20 @@ group before Silt resumes any stage.
 
 ## Milestone D4: signals and interactive job control
 
-Status: implemented bring-up slice; acceptance remains open. `JOBS=1` now
-exercises real action masks, atomic signal suspension, capability-backed job
-groups, and ttyd-backed terminal I/O. See
-`docs/architecture/signals-and-terminal.md` for the supported subset and
-remaining wait/trap, resource-exhaustion and terminal-session work.
+Status: **closed on 2026-09-13** for the selected scope and documented terminal subset.
+The selected scope includes POSIX session creation, controlling-terminal
+acquisition and PTY lifecycle. See the
+[D4 closure record](../architecture/d4-closure.md) for the current contracts,
+test evidence and explicit terminal-control subset. The entries below retain
+the chronological bring-up and failure history.
 
 - Complete `sigaction`, signal masks, `sigsuspend`, and interrupted-wait rules.
 - Implement `isatty`, the required `termios` subset, `tcgetpgrp`, and
   capability-authorized `tcsetpgrp` through sessiond/ttyd.
 - Enable dash `JOBS=1`; validate foreground/background pipelines, `jobs`, `fg`,
   `bg`, `^C`, `^Z`, `SIGTTIN`, `SIGTTOU`, and terminal restoration.
+- Implement session/group transitions, controlling-terminal acquisition and
+  detachment, and POSIX PTY creation, ownership, access and endpoint lifetime.
 
 Acceptance: upstream job tests and Neva's UART/PTY interaction gates pass,
 including service restart and consecutive clean SMP-8 runs.
@@ -455,6 +458,25 @@ All eight host gates pass. Six fresh-media pairs on 1/4/8/8/8/8 CPUs each pass
 and per-run symbol hashes match. The kernel remains unchanged.
 D4 remains open for other allocation and signal-arrival failures and full
 terminal/PTY rules.
+
+Session/PTY closure, 2026-09-13: the selected expanded scope now implements
+real session/group transitions, controlling-terminal acquisition and detachment,
+and POSIX PTY ownership, access and endpoint lifetime. Native tests cover orphan
+HUP/CONT with a full child-report queue, stopped foreground hangup, leader exit,
+reacquisition, stale/retired identities and raw capability access refusal. Dash
+runs interactively on a native PTY; shared Linux/Silt assertions cover the
+supported canonical/noncanonical terminal behavior. The work also fixes inherited
+environment storage, feature-macro fd constants and Neva's GIC distributor race.
+
+The [D4 closure record](../architecture/d4-closure.md) maps contracts, limits,
+negative controls and final evidence. Neva host 37/37 and Silt host 9/9 pass;
+kernel 1/4/8/8 runs pass 94/97/101/101 checks. Six fresh-media Silt runs on
+1/4/8/8/8/8 CPUs each pass **455/455**, including 32 terminal cycles, 160 prompt
+interrupts and four service crashes per run. Six further boots on the same CPU
+sequence each pass **142/142** admission checks. All 156 injected refusals recover;
+all artifact/source and per-run symbol hashes match. D4 is closed for this
+documented profile. D5 remains the `/bin/sh` release, startup/shebang and published
+conformance-matrix milestone; this does not claim full OS POSIX certification.
 
 ## Milestone D5: `/bin/sh` release
 

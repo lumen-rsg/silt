@@ -1,6 +1,8 @@
 # Signals and interactive terminal profile
 
-Status: D4 bring-up; not full POSIX conformance or D4 acceptance closure.
+Current session/PTY implementation and acceptance are recorded in
+[D4 closure](d4-closure.md). The earlier UART-only limitations and remaining-work
+list below describe the preceding bring-up profile; they are retained as history.
 
 ## Signal mechanism
 

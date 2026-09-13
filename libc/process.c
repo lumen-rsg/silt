@@ -49,7 +49,7 @@ int silt_job_finish(int pid) {
         // Otherwise a later fork failure leaves the prompt in a dead group.
         if (g_pipeline_active) {
             g_pipeline_foreground = 1;
-        } else if (silt_tty_set_foreground(neva_tty_handle(), g_children[index].group)
+        } else if (silt_controlling_set_foreground(g_children[index].group)
                    != NEVA_STATUS_OK) {
             silt_pipeline_abort();
             errno = EIO;
@@ -61,13 +61,6 @@ int silt_job_finish(int pid) {
     return result;
 }
 
-static uint32_t session_remote(void) {
-    NevaStartupHandleV1 record;
-    return neva_startup_find("catalog", &record) == NEVA_STATUS_OK
-            && record.object_type == NEVA_OBJECT_TYPE_REMOTE_OBJECT
-        ? record.handle : NEVA_INVALID_HANDLE;
-}
-
 void silt_pipeline_begin(void) {
     if (g_pipeline_active || g_pipeline_group) silt_pipeline_abort();
     g_pipeline_active = 1;
@@ -76,7 +69,7 @@ void silt_pipeline_begin(void) {
 
 int silt_pipeline_end(void) {
     if (g_pipeline_foreground && g_pipeline_group
-        && silt_tty_set_foreground(neva_tty_handle(), g_pipeline_group) != NEVA_STATUS_OK) {
+        && silt_controlling_set_foreground(g_pipeline_group) != NEVA_STATUS_OK) {
         silt_pipeline_abort();
         errno = EIO;
         return -1;
@@ -149,27 +142,14 @@ static void children_clear_in_child(void) {
 }
 
 static int pipeline_attach(uint32_t process, pid_t pid) {
-    uint32_t remote = session_remote();
-    uint32_t process_transfer = remote ? sys_handle_dup(
-        process, HANDLE_RIGHT_RPC | HANDLE_RIGHT_ADMIN
-            | HANDLE_RIGHT_INSPECT | HANDLE_RIGHT_TRANSFER) : 0;
-    if (!process_transfer) return -1;
-    NevaServiceResult result;
+    NevaStatus status = (NevaStatus)(int64_t)sys_rpc(process, PROCESS_RPC_SETPGID,
+        g_pipeline_group ? (uint64_t)g_pipeline_leader : 0, 0);
+    if (status != NEVA_STATUS_OK) return -1;
     if (!g_pipeline_group) {
-        result = sys_service_call(
-            remote, SESSION_CONTROL_RPC_CREATE_JOB, 0, 0,
-            process_transfer, 0, NEVA_DEADLINE_INFINITE);
-        (void)sys_handle_close(process_transfer);
-        if (result.status != NEVA_STATUS_OK || !result.handle) return -1;
-        g_pipeline_group = result.handle;
+        int64_t group = (int64_t)sys_rpc(process, PROCESS_RPC_DUP_GROUP, 0, 0);
+        if (group <= 0 || group > UINT32_MAX) return -1;
+        g_pipeline_group = (uint32_t)group;
         g_pipeline_leader = pid;
-    } else {
-        result = sys_service_call(
-            remote, SESSION_CONTROL_RPC_JOIN_JOB,
-            (uint64_t)g_pipeline_leader, 0,
-            process_transfer, 0, NEVA_DEADLINE_INFINITE);
-        (void)sys_handle_close(process_transfer);
-        if (result.status != NEVA_STATUS_OK) return -1;
     }
     return 0;
 }
@@ -359,6 +339,7 @@ static int wait_status(const NevaWaitResult* result) {
 static pid_t wait_child(int index, int* status, int options) {
     uint32_t wait_options = WAIT_REPORT_EXITED;
     if (options & WUNTRACED) wait_options |= WAIT_REPORT_STOPPED;
+    if (options & WCONTINUED) wait_options |= WAIT_REPORT_CONTINUED;
     if (options & WNOHANG) wait_options |= WAIT_NOHANG;
     NevaWaitResult result = sys_wait_capability(
         g_children[index].process, wait_options,
@@ -377,7 +358,7 @@ static pid_t wait_child(int index, int* status, int options) {
 }
 
 pid_t waitpid(pid_t process, int* status, int options) {
-    if ((options & ~(WNOHANG | WUNTRACED)) != 0 || process == 0
+    if ((options & ~(WNOHANG | WUNTRACED | WCONTINUED)) != 0 || process == 0
         || process < -1) {
         errno = EINVAL;
         return -1;
@@ -405,7 +386,8 @@ pid_t waitpid(pid_t process, int* status, int options) {
     // The zero selector is confined by Neva to the caller's direct children.
     // Blocking on one arbitrary child would hide another job's stop or exit.
     NevaWaitResult result = sys_wait_raw(0, WAIT_REPORT_EXITED
-        | ((options & WUNTRACED) ? WAIT_REPORT_STOPPED : 0), NEVA_DEADLINE_INFINITE);
+        | ((options & WUNTRACED) ? WAIT_REPORT_STOPPED : 0)
+        | ((options & WCONTINUED) ? WAIT_REPORT_CONTINUED : 0), NEVA_DEADLINE_INFINITE);
     if (result.status != NEVA_STATUS_OK) {
         errno = result.status == NEVA_STATUS_INTERRUPTED ? EINTR : ECHILD;
         return -1;
@@ -448,7 +430,10 @@ int kill(pid_t process, int signal_number) {
     }
     int index = child_index(process);
     if (index < 0) {
-        errno = ESRCH;
+        int result = sys_kill((uint32_t)process, signal_number);
+        if (result == 0) return 0;
+        errno = result == NEVA_STATUS_ACCESS_DENIED ? EPERM
+            : result == NEVA_STATUS_INVALID_ARGUMENT ? EINVAL : ESRCH;
         return -1;
     }
     NevaStatus result = (NevaStatus)(int64_t)sys_rpc(
@@ -473,28 +458,33 @@ pid_t getppid(void) {
     return (pid_t)info.parent_process_id;
 }
 
-// Only called while the guarded wrapper has blocked signal delivery.
+static uint32_t posix_process_handle(pid_t process) {
+    if (process == 0 || process == getpid()) {
+        NevaStartupHandleV1 record;
+        return neva_startup_find("process", &record) == NEVA_STATUS_OK ? record.handle : 0;
+    }
+    int index = child_index(process);
+    return index >= 0 ? g_children[index].process : 0;
+}
+
+// Only called while the guarded wrapper has blocked signal delivery. Query
+// actual membership: a child may have changed group/session since fork.
 static uint32_t silt_group_acquire(int process_group) {
-    for (int index = 0; index < SILT_CHILD_MAX; index++) {
-        if (process_group > 0 && g_children[index].pgid == process_group
-            && g_children[index].group) {
-            return sys_handle_dup(g_children[index].group,
-                HANDLE_RIGHT_RPC | HANDLE_RIGHT_INSPECT | HANDLE_RIGHT_SIGNAL
-                    | HANDLE_RIGHT_TRANSFER);
+    uint32_t process = posix_process_handle(0);
+    if (process_group && (int64_t)sys_rpc(process, PROCESS_RPC_GETPGID, 0, 0) != process_group) {
+        process = 0;
+        for (int index = 0; index < SILT_CHILD_MAX; index++) {
+            uint32_t child = g_children[index].process;
+            if (child && (int64_t)sys_rpc(child, PROCESS_RPC_GETPGID, 0, 0) == process_group) {
+                process = child;
+                break;
+            }
         }
     }
-    uint32_t remote = session_remote();
-    NevaServiceResult result = sys_service_call(remote,
-        SESSION_CONTROL_RPC_DUP_OWN_GROUP, 0, 0, 0, 0, NEVA_DEADLINE_INFINITE);
-    if (result.status != NEVA_STATUS_OK || !result.handle) return 0;
-    NevaProcessGroupInfoV1 info;
-    if ((NevaStatus)(int64_t)sys_rpc(result.handle, PROCESS_GROUP_RPC_QUERY,
-            (uint64_t)(uintptr_t)&info, sizeof(info)) != NEVA_STATUS_OK
-        || (process_group > 0 && info.leader_process_id != (uint32_t)process_group)) {
-        (void)sys_handle_close(result.handle);
-        return 0;
-    }
-    return result.handle;
+    uint32_t selector = process ? 0 : (uint32_t)process_group;
+    if (!process) process = posix_process_handle(0);
+    int64_t group = process ? (int64_t)sys_rpc(process, PROCESS_RPC_DUP_GROUP, selector, 0) : 0;
+    return group > 0 && group <= UINT32_MAX ? (uint32_t)group : 0;
 }
 
 uint32_t silt_group_acquire_guarded(SiltCleanup* cleanup, int process_group) {
@@ -504,33 +494,48 @@ uint32_t silt_group_acquire_guarded(SiltCleanup* cleanup, int process_group) {
     return cleanup->handle;
 }
 
-pid_t getpgid(pid_t process) {
-    if (process == 0 || process == getpid()) {
-        SiltCleanup cleanup;
-        uint32_t group = silt_group_acquire_guarded(&cleanup, 0);
-        NevaProcessGroupInfoV1 info;
-        NevaStatus status = group ? (NevaStatus)(int64_t)sys_rpc(group,
-            PROCESS_GROUP_RPC_QUERY, (uint64_t)(uintptr_t)&info, sizeof(info))
-            : NEVA_STATUS_NOT_FOUND;
-        silt_cleanup_end(&cleanup);
-        if (status == NEVA_STATUS_OK) return (pid_t)info.leader_process_id;
-    } else {
-        int index = child_index(process);
-        if (index >= 0 && g_children[index].pgid) return g_children[index].pgid;
-    }
-    errno = ESRCH;
+static int process_group_error(int64_t status) {
+    errno = status == NEVA_STATUS_ACCESS_DENIED ? EPERM
+        : status == NEVA_STATUS_BUSY ? EACCES
+        : status == NEVA_STATUS_INVALID_ARGUMENT ? EINVAL
+        : status == NEVA_STATUS_NO_MEMORY || status == NEVA_STATUS_LIMIT_REACHED ? EAGAIN
+        : ESRCH;
     return -1;
+}
+
+pid_t getpgid(pid_t process) {
+    uint32_t handle = process >= 0 ? posix_process_handle(process) : 0;
+    uint32_t selector = handle ? 0 : (uint32_t)process;
+    if (!handle && process > 0) handle = posix_process_handle(0);
+    if (!handle) { errno = ESRCH; return -1; }
+    int64_t result = (int64_t)sys_rpc(handle, PROCESS_RPC_GETPGID, selector, 0);
+    return result > 0 ? (pid_t)result : process_group_error(result);
+}
+
+pid_t getsid(pid_t process) {
+    uint32_t handle = process >= 0 ? posix_process_handle(process) : 0;
+    uint32_t selector = handle ? 0 : (uint32_t)process;
+    if (!handle && process > 0) handle = posix_process_handle(0);
+    if (!handle) { errno = ESRCH; return -1; }
+    int64_t result = (int64_t)sys_rpc(handle, PROCESS_RPC_GETSID, selector, 0);
+    return result > 0 ? (pid_t)result : process_group_error(result);
+}
+
+pid_t setsid(void) {
+    uint32_t handle = posix_process_handle(0);
+    if (!handle) { errno = ESRCH; return -1; }
+    int64_t result = (int64_t)sys_rpc(handle, PROCESS_RPC_SETSID, 0, 0);
+    return result > 0 ? (pid_t)result : process_group_error(result);
 }
 
 pid_t getpgrp(void) { return getpgid(0); }
 
 int setpgid(pid_t process, pid_t group) {
     if (process < 0 || group < 0) { errno = EINVAL; return -1; }
-    if (process == 0) process = getpid();
-    if (group == 0) group = process;
-    if (getpgid(process) == group) return 0;
-    errno = EPERM;
-    return -1;
+    uint32_t handle = posix_process_handle(process);
+    if (!handle) { errno = ESRCH; return -1; }
+    int64_t result = (int64_t)sys_rpc(handle, PROCESS_RPC_SETPGID, (uint64_t)group, 0);
+    return result == NEVA_STATUS_OK ? 0 : process_group_error(result);
 }
 
 int killpg(pid_t process_group, int signal_number) {

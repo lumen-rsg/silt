@@ -4,7 +4,9 @@
 
 #define WNOHANG 1
 #define WUNTRACED 2
+#define WCONTINUED 4
 
+#define WIFCONTINUED(status) ((status) == 0xffff)
 #define WIFEXITED(status) (((status) & 0xff) == 0)
 #define WIFSIGNALED(status) \
     (((status) & 0x7f) > 0 && ((status) & 0x7f) < 0x7f)

@@ -65,6 +65,8 @@ def main() -> int:
                         help="alternative kernel ELF; --gdb-log requires matching neva-build ttyd symbols")
     parser.add_argument("--rootfs", type=Path, required=True)
     parser.add_argument("--smp", type=int, default=4)
+    parser.add_argument("--session-tests-only", action="store_true",
+                        help="run only the native session/group transition gate after boot")
     parser.add_argument("--restart-tests", action="store_true",
                         help="inject idle ttyd/sessiond EL0 crashes through local QEMU GDB")
     parser.add_argument("--uart-log", type=Path, help="retain complete guest UART output")
@@ -163,8 +165,7 @@ def main() -> int:
         print("=== Booting Neva with the Silt R0 rootfs ===")
         session.start()
         if not session.read_until(runner.PROMPT, timeout=120):
-            print(session.output.decode(errors="replace")[-10000:])
-            return 1
+            raise TimeoutError("boot did not reach the recovery prompt")
         boot_markers = (
             b"B2_INITD_READY: PASS",
             b"B3_INITD_READY: PASS",
@@ -190,6 +191,28 @@ def main() -> int:
         if not session.read_until(runner.PROMPT, timeout=30, start_offset=start):
             print(session.output.decode(errors="replace")[-10000:])
             return 1
+
+        run("check-signals sessions", (
+            b"D4_SESSIONS: new session/inheritance/leader/cross-session PASS",
+            b"D4_SESSIONS: parent regroup/failed exec/actual queries PASS",
+            b"D4_SESSIONS: committed exec revokes parent regroup PASS",
+            b"D4_SESSIONS: parent setsid/orphan HUP CONT/terminal EIO PASS",
+            b"D4_SESSIONS: parent exit/orphan HUP CONT/terminal EIO PASS",
+            b"D4_SESSIONS: full report queue/orphan mandatory continuation PASS",
+            b"D4_SESSIONS: PTY grant/unlock/idle/I O/dup/fork/last close/reuse PASS",
+            b"D4_SESSIONS: PTY canonical EOF/MIN TIME/nonblock/flush/drain/EINTR PASS",
+            b"D4_SESSIONS: PTY O_NOCTTY/acquisition/one per session/exec/hangup PASS",
+            b"D4_SESSIONS: PTY slave reopen/leader exit/HUP/reacquire/pool recovery PASS",
+        ), "native session/group transitions")
+        run("status", (b"status=0",), "native session/group transition status")
+        run("check-signals sessions pty-dash", (
+            b"D4_SESSIONS: real Dash over PTY/input/stop/jobs/fg/interrupt/exit PASS",
+        ), "Dash over native POSIX PTY", timeout=60)
+        run("status", (b"status=0",), "Dash PTY status")
+        if args.session_tests_only:
+            failed = sum(not passed for _, passed, _ in checks)
+            print(f"Session transition acceptance: {len(checks) - failed} passed, {failed} failed")
+            return 1 if failed else 0
 
         print("\n=== Interactive recovery shell and Silt commands ===")
         start = len(session.output)

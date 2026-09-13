@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -31,6 +32,8 @@ typedef enum {
     SILT_DESCRIPTION_DIRECTORY,
     SILT_DESCRIPTION_PIPE_READ,
     SILT_DESCRIPTION_PIPE_WRITE,
+    SILT_DESCRIPTION_PTY_SLAVE,
+    SILT_DESCRIPTION_PTY_MASTER,
 } SiltDescriptionKind;
 
 typedef struct {
@@ -286,7 +289,9 @@ static void description_sync_cloexec(int index) {
     if ((description->kind != SILT_DESCRIPTION_FILE
          && description->kind != SILT_DESCRIPTION_DIRECTORY
          && description->kind != SILT_DESCRIPTION_PIPE_READ
-         && description->kind != SILT_DESCRIPTION_PIPE_WRITE)
+         && description->kind != SILT_DESCRIPTION_PIPE_WRITE
+         && description->kind != SILT_DESCRIPTION_PTY_SLAVE
+         && description->kind != SILT_DESCRIPTION_PTY_MASTER)
         || !description->handle) return;
     int all_cloexec = 1;
     for (int descriptor = 0; descriptor < SILT_DESCRIPTOR_MAX; descriptor++) {
@@ -309,7 +314,9 @@ static void description_release(int index) {
     if ((description->kind == SILT_DESCRIPTION_FILE
          || description->kind == SILT_DESCRIPTION_DIRECTORY
          || description->kind == SILT_DESCRIPTION_PIPE_READ
-         || description->kind == SILT_DESCRIPTION_PIPE_WRITE)
+         || description->kind == SILT_DESCRIPTION_PIPE_WRITE
+         || description->kind == SILT_DESCRIPTION_PTY_SLAVE
+         || description->kind == SILT_DESCRIPTION_PTY_MASTER)
         && description->handle) {
         (void)sys_handle_close(description->handle);
     }
@@ -496,7 +503,7 @@ int silt_descriptors_exec_restore(const SiltExecInfoV2* info) {
         const SiltExecDescriptionV2* source = &info->descriptions[index];
         if (source->identifier >= SILT_DESCRIPTION_MAX
             || source->kind == SILT_DESCRIPTION_FREE
-            || source->kind > SILT_DESCRIPTION_PIPE_WRITE
+            || source->kind > SILT_DESCRIPTION_PTY_MASTER
             || g_descriptions[source->identifier].kind
                 != SILT_DESCRIPTION_FREE) {
             return -1;
@@ -631,6 +638,40 @@ static NevaServiceResult create_file(const char* path, uint32_t rights,
     return created;
 }
 
+static int open_terminal(const char* path, int flags, uint64_t identity, int master) {
+    SiltCleanup guard;
+    uint32_t mask = silt_cleanup_begin(&guard);
+    // Recheck after blocking handlers: terminal acquisition must never commit
+    // unless the caller can publish its descriptor without another failure.
+    if (descriptor_capacity(1) < 0) {
+        silt_cleanup_end(&guard);
+        silt_cleanup_ready(mask);
+        return -1;
+    }
+    uint32_t handle = silt_cleanup_adopt(&guard, silt_pty_open(identity, flags, master));
+    int descriptor = -1;
+    if (handle) {
+        int description = description_allocate(master ? SILT_DESCRIPTION_PTY_MASTER : SILT_DESCRIPTION_PTY_SLAVE,
+            handle, HANDLE_RIGHT_RPC | HANDLE_RIGHT_INSPECT | HANDLE_RIGHT_WRITE | HANDLE_RIGHT_TRANSFER,
+            flags, path);
+        if (description >= 0) {
+            descriptor = descriptor_allocate_from(description, 0, (flags & O_CLOEXEC) ? FD_CLOEXEC : 0);
+            guard.handle = 0; // The description owns the reference from here.
+            if (descriptor < 0) description_release(description);
+            else {
+                (void)sys_rpc(handle, REMOTE_OBJECT_RPC_SET_OPEN_FLAGS,
+                    (flags & O_NONBLOCK) ? NEVA_REMOTE_OPEN_NONBLOCK : 0, 0);
+                description_sync_cloexec(description);
+            }
+        }
+    }
+    silt_cleanup_end(&guard);
+    silt_cleanup_ready(mask);
+    return descriptor;
+}
+
+static int pty_path_identity(const char* path, uint64_t* identity);
+
 static int open_normalized(const char* path, int flags, mode_t mode) {
     int access = flags & O_ACCMODE;
     if (access != O_RDONLY && access != O_WRONLY && access != O_RDWR) {
@@ -641,14 +682,21 @@ static int open_normalized(const char* path, int flags, mode_t mode) {
     // Each live description owns at least one descriptor, so this also
     // guarantees a free description slot at this admission check.
     if (descriptor_capacity(1) < 0) return -1;
-    if (strcmp(path, "/dev/null") == 0 || strcmp(path, "/dev/tty") == 0) {
-        SiltDescriptionKind kind = strcmp(path, "/dev/null") == 0
-            ? SILT_DESCRIPTION_NULL : SILT_DESCRIPTION_TTY;
-        uint32_t tty = kind == SILT_DESCRIPTION_TTY ? neva_tty_handle() : 0;
-        if (kind == SILT_DESCRIPTION_TTY && !tty) {
-            errno = ENXIO;
-            return -1;
+    if (strcmp(path, "/dev/ptmx") == 0) {
+        if (access != O_RDWR || (flags & ~(O_RDWR | O_NOCTTY | O_CLOEXEC | O_NONBLOCK))) {
+            errno = EINVAL; return -1;
         }
+        return open_terminal(path, flags, 0, 1);
+    }
+    if (strcmp(path, "/dev/tty") == 0) return open_terminal(path, flags, 0, 0);
+    if (strncmp(path, "/dev/pts/", 9) == 0) {
+        uint64_t identity;
+        if (pty_path_identity(path, &identity)) return -1;
+        return open_terminal(path, flags, identity, 0);
+    }
+    if (strcmp(path, "/dev/null") == 0) {
+        SiltDescriptionKind kind = SILT_DESCRIPTION_NULL;
+        uint32_t tty = 0;
         int description = description_allocate(
             kind, tty, HANDLE_RIGHT_WRITE | HANDLE_RIGHT_RPC, flags, path);
         if (description < 0) return -1;
@@ -835,8 +883,11 @@ int read(int descriptor, void* buffer, size_t size) {
         errno = EBADF;
         return -1;
     }
-    if (description->kind == SILT_DESCRIPTION_TTY) {
-        return silt_tty_read(description->handle, buffer, size);
+    if (description->kind == SILT_DESCRIPTION_TTY || description->kind == SILT_DESCRIPTION_PTY_SLAVE) {
+        return silt_tty_read(description->handle, buffer, size, fcntl(descriptor, F_GETFL));
+    }
+    if (description->kind == SILT_DESCRIPTION_PTY_MASTER) {
+        return silt_pty_io(description->handle, buffer, size, fcntl(descriptor, F_GETFL), 0);
     }
     if (description->kind != SILT_DESCRIPTION_FILE) {
         errno = EISDIR;
@@ -864,8 +915,11 @@ int write(int descriptor, const void* buffer, size_t size) {
         errno = EBADF;
         return -1;
     }
-    if (description->kind == SILT_DESCRIPTION_TTY) {
-        return silt_tty_write(description->handle, buffer, size);
+    if (description->kind == SILT_DESCRIPTION_TTY || description->kind == SILT_DESCRIPTION_PTY_SLAVE) {
+        return silt_tty_write(description->handle, buffer, size, fcntl(descriptor, F_GETFL));
+    }
+    if (description->kind == SILT_DESCRIPTION_PTY_MASTER) {
+        return silt_pty_io(description->handle, (void*)buffer, size, fcntl(descriptor, F_GETFL), 1);
     }
     if (description->kind != SILT_DESCRIPTION_FILE) {
         errno = EISDIR;
@@ -947,9 +1001,23 @@ int fcntl(int descriptor, int command, ...) {
         g_descriptors[descriptor].flags = (uint8_t)(flags & FD_CLOEXEC);
         description_sync_cloexec((int)(description - g_descriptions));
         result = 0;
-    } else if (command == F_GETFL) result = description->status_flags;
+    } else if (command == F_GETFL) {
+        result = description->status_flags;
+        if (description->kind == SILT_DESCRIPTION_PTY_MASTER || description->kind == SILT_DESCRIPTION_PTY_SLAVE) {
+            int64_t flags = (int64_t)sys_rpc(description->handle, REMOTE_OBJECT_RPC_GET_OPEN_FLAGS, 0, 0);
+            if (flags < 0) { result = -1; errno = EIO; }
+            else result = (result & ~O_NONBLOCK) | ((flags & NEVA_REMOTE_OPEN_NONBLOCK) ? O_NONBLOCK : 0);
+        }
+    }
     else if (command == F_SETFL) {
         int flags = va_arg(arguments, int);
+        if (description->kind == SILT_DESCRIPTION_PTY_MASTER || description->kind == SILT_DESCRIPTION_PTY_SLAVE) {
+            int64_t status = (int64_t)sys_rpc(description->handle, REMOTE_OBJECT_RPC_SET_OPEN_FLAGS,
+                (flags & O_NONBLOCK) ? NEVA_REMOTE_OPEN_NONBLOCK : 0, 0);
+            va_end(arguments);
+            if (status < 0) { errno = EIO; return -1; }
+            return 0;
+        }
         if (flags & O_NONBLOCK) {
             va_end(arguments);
             errno = ENOTSUP;
@@ -980,7 +1048,8 @@ int fcntl(int descriptor, int command, ...) {
 int isatty(int descriptor) {
     SiltOpenDescription* description = descriptor_get(descriptor);
     if (!description) return 0;
-    if (description->kind == SILT_DESCRIPTION_TTY) return 1;
+    if (description->kind == SILT_DESCRIPTION_TTY || description->kind == SILT_DESCRIPTION_PTY_SLAVE
+        || description->kind == SILT_DESCRIPTION_PTY_MASTER) return 1;
     errno = ENOTTY;
     return 0;
 }
@@ -988,7 +1057,8 @@ int isatty(int descriptor) {
 uint32_t silt_descriptor_tty(int descriptor) {
     SiltOpenDescription* description = descriptor_get(descriptor);
     if (!description) return 0;
-    if (description->kind == SILT_DESCRIPTION_TTY) return description->handle;
+    if (description->kind == SILT_DESCRIPTION_TTY || description->kind == SILT_DESCRIPTION_PTY_SLAVE)
+        return description->handle;
     errno = ENOTTY;
     return 0;
 }
@@ -1003,6 +1073,29 @@ static void fill_file_stat(const NevaRemoteFileInfoV1* info, struct stat* status
     status->st_size = (off_t)info->byte_size;
 }
 
+static void fill_terminal_stat(const NevaTtyMetadataV1* metadata, struct stat* status) {
+    memset(status, 0, sizeof(*status));
+    status->st_mode = S_IFCHR | metadata->mode;
+    status->st_uid = metadata->uid;
+    status->st_gid = metadata->gid;
+    status->st_ino = (ino_t)metadata->terminal_id;
+    status->st_nlink = 1;
+}
+
+static int pty_path_identity(const char* path, uint64_t* identity) {
+    const char* digit = path + 9;
+    *identity = 0;
+    if (!*digit) { errno = ENOENT; return -1; }
+    for (; *digit; digit++) {
+        if (*digit < '0' || *digit > '9' || *identity > (UINT64_MAX - (uint32_t)(*digit - '0')) / 10U) {
+            errno = ENOENT; return -1;
+        }
+        *identity = *identity * 10U + (uint32_t)(*digit - '0');
+    }
+    if (!*identity) { errno = ENOENT; return -1; }
+    return 0;
+}
+
 int fstat(int descriptor, struct stat* status) {
     SiltOpenDescription* description = descriptor_get(descriptor);
     if (!description) return -1;
@@ -1011,8 +1104,17 @@ int fstat(int descriptor, struct stat* status) {
         return -1;
     }
     memset(status, 0, sizeof(*status));
-    if (description->kind == SILT_DESCRIPTION_TTY
-        || description->kind == SILT_DESCRIPTION_NULL) {
+    if (description->kind == SILT_DESCRIPTION_PTY_SLAVE || description->kind == SILT_DESCRIPTION_PTY_MASTER) {
+        NevaTtyMetadataV1 metadata;
+        NevaStatus result = sys_service_call(description->handle,
+            description->kind == SILT_DESCRIPTION_PTY_MASTER ? PTY_MASTER_RPC_GET_METADATA
+                : PTY_SLAVE_RPC_GET_METADATA, (uintptr_t)&metadata, 0, 0, sizeof(metadata),
+            NEVA_DEADLINE_INFINITE).status;
+        if (result != NEVA_STATUS_OK) { errno = status_errno(result); return -1; }
+        fill_terminal_stat(&metadata, status);
+        return 0;
+    }
+    if (description->kind == SILT_DESCRIPTION_TTY || description->kind == SILT_DESCRIPTION_NULL) {
         status->st_mode = S_IFCHR | 0666;
         status->st_nlink = 1;
         return 0;
@@ -1051,7 +1153,14 @@ int stat(const char* path, struct stat* status) {
         status->st_nlink = 1;
         return 0;
     }
-    if (strcmp(normalized, "/dev/null") == 0
+    if (strncmp(normalized, "/dev/pts/", 9) == 0) {
+        uint64_t identity;
+        NevaTtyMetadataV1 metadata;
+        if (pty_path_identity(normalized, &identity) || silt_pty_metadata(identity, &metadata)) return -1;
+        fill_terminal_stat(&metadata, status);
+        return 0;
+    }
+    if (strcmp(normalized, "/dev/ptmx") == 0 || strcmp(normalized, "/dev/null") == 0
         || strcmp(normalized, "/dev/tty") == 0) {
         memset(status, 0, sizeof(*status));
         status->st_mode = S_IFCHR | 0666;
@@ -1219,4 +1328,44 @@ int closedir(DIR* directory) {
 
 void rewinddir(DIR* directory) {
     if (directory) directory->index = 0;
+}
+
+int posix_openpt(int flags) { return open("/dev/ptmx", flags); }
+
+static uint32_t pty_master_handle(int descriptor) {
+    SiltOpenDescription* description = descriptor_get(descriptor);
+    if (!description) return 0;
+    if (description->kind != SILT_DESCRIPTION_PTY_MASTER) { errno = EINVAL; return 0; }
+    return description->handle;
+}
+
+int grantpt(int descriptor) {
+    uint32_t master = pty_master_handle(descriptor);
+    if (!master) return -1;
+    SiltCleanup cleanup;
+    uint32_t group = silt_group_acquire_guarded(&cleanup, 0);
+    NevaStatus status = sys_service_call(master, PTY_MASTER_RPC_GRANT,
+        0, 0, group, 0, NEVA_DEADLINE_INFINITE).status;
+    silt_cleanup_end(&cleanup);
+    if (status != NEVA_STATUS_OK) { errno = EACCES; return -1; }
+    return 0;
+}
+
+int unlockpt(int descriptor) {
+    uint32_t master = pty_master_handle(descriptor);
+    if (!master) return -1;
+    if (sys_service_call(master, PTY_MASTER_RPC_UNLOCK, 0, 0, 0, 0,
+        NEVA_DEADLINE_INFINITE).status != NEVA_STATUS_OK) { errno = EIO; return -1; }
+    return 0;
+}
+
+char* ptsname(int descriptor) {
+    static char name[40];
+    uint32_t master = pty_master_handle(descriptor);
+    if (!master) return NULL;
+    NevaServiceResult result = sys_service_call(master, PTY_MASTER_RPC_GET_SLAVE_ID,
+        0, 0, 0, 0, NEVA_DEADLINE_INFINITE);
+    if ((int64_t)result.value <= 0) { errno = EIO; return NULL; }
+    snprintf(name, sizeof(name), "/dev/pts/%llu", (unsigned long long)result.value);
+    return name;
 }

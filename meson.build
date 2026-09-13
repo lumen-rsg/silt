@@ -194,6 +194,15 @@ test(
   args: [files('tools/test_dash_read_signal.py'), source_root / 'vendor/dash-0.5.13.5/src/dash'],
 )
 
+session_reference = executable(
+  'silt-session-linux-reference',
+  'apps/check-sessions.c',
+  native: true,
+  c_args: ['-DSILT_REFERENCE_HOST', '-Wall', '-Wextra', '-Werror'],
+  install: false,
+)
+test('session-linux-pty-reference', session_reference, timeout: 30)
+
 silt_app_names = [
   'check-cleanup',
   'check-faults',
@@ -254,12 +263,26 @@ test(
   args: [files('tools/audit_dash_link.py'), '--nm', cross_nm.full_path(), dash_app],
 )
 
+session_object = custom_target(
+  'silt-session-check-object',
+  input: 'apps/check-sessions.c',
+  output: 'silt_session_checks.o',
+  depfile: 'silt_session_checks.o.d',
+  command: [cross_cc] + silt_app_c_args + [
+    '-MMD', '-MQ', '@OUTPUT@', '-MF', '@DEPFILE@',
+    '-c', '@INPUT@', '-o', '@OUTPUT@',
+  ],
+)
+
 silt_app_targets = {}
 foreach app_name : silt_app_names
   app_extra_link_args = []
   app_link_inputs = [
     '@INPUT@', '--start-group', silt_libc, neva_libneva, '--end-group',
   ]
+  if app_name == 'check-signals'
+    app_link_inputs = ['@INPUT@', session_object, '--start-group', silt_libc, neva_libneva, '--end-group']
+  endif
   if app_name == 'true'
     app_extra_link_args = ['--undefined=pager_exec_probe']
     # /bin/true is also Neva's bounded two-page PagerFile execution fixture.

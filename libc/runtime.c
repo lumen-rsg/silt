@@ -24,6 +24,8 @@
 
 static int g_errno;
 static char* g_environment[SILT_ENVIRONMENT_MAX + 1U];
+// The exec handoff page is DONTFORK; environment pointers must outlive it.
+static char g_environment_strings[SILT_EXEC_STRING_BYTES];
 char** environ = g_environment;
 static mode_t g_umask = 022;
 
@@ -40,12 +42,12 @@ void silt_environment_exec_restore(const SiltExecInfoV2* info) {
         uint16_t length = info->environment[index].length;
         if (offset > info->string_bytes || length >= info->string_bytes - offset
             || info->strings[offset + length] != '\0') {
-            for (size_t clear = 0; clear <= SILT_ENVIRONMENT_MAX; clear++) {
-                g_environment[clear] = NULL;
-            }
             return;
         }
-        g_environment[index] = (char*)&info->strings[offset];
+    }
+    memcpy(g_environment_strings, info->strings, info->string_bytes);
+    for (uint16_t index = 0; index < info->environment_count; index++) {
+        g_environment[index] = &g_environment_strings[info->environment[index].offset];
     }
 }
 
