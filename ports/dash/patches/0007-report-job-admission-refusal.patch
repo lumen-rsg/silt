@@ -1,0 +1,40 @@
+--- a/src/eval.c
++++ b/src/eval.c
+@@ -636,8 +636,9 @@
+ 			close(writefd);
+ 		writefd = -1;
+ 	}
++	if (silt_pipeline_end() < 0)
++		sh_error("Cannot start pipeline");
+ 	handler = savehandler;
+-	silt_pipeline_end();
+ 	if (n->npipe.backgnd == 0) {
+ 		status = waitforjob(jp);
+ 		TRACE(("evalpipe:  job done exit status %d\n", status));
+--- a/src/jobs.c
++++ b/src/jobs.c
+@@ -1021,8 +1021,10 @@
+ 		forkchild(jp, n, mode);
+ 	else
+ 		forkparent(jp, n, mode, pid);
+-	if (pid > 0)
+-		silt_job_finish(pid);
++	if (pid > 0 && silt_job_finish(pid) < 0) {
++		abortjob(jp);
++		sh_error("Cannot start job");
++	}
+ 
+ 	return pid;
+ }
+@@ -1049,7 +1051,10 @@
+ 
+ 	vforked = 0;
+ 	forkparent(jp, n, FORK_FG, pid);
+-	silt_job_finish(pid);
++	if (silt_job_finish(pid) < 0) {
++		abortjob(jp);
++		sh_error("Cannot start job");
++	}
+ 
+ 	return jp;
+ }

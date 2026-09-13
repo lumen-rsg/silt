@@ -20,6 +20,7 @@ typedef struct {
     pid_t pid;
     uint32_t process;
     uint8_t suspended;
+    uint8_t constructing;
     pid_t pgid;
     uint32_t group;
 } SiltChild;
@@ -40,9 +41,9 @@ void silt_job_prepare(int group, int foreground) {
     g_job_foreground = foreground;
 }
 
-void silt_job_finish(int pid) {
+int silt_job_finish(int pid) {
     int index = child_index(pid);
-    if (index < 0) return;
+    if (index < 0) { errno = ECHILD; return -1; }
     if (g_job_enabled && g_job_foreground && g_children[index].group) {
         // Keep the shell foreground until every suspended stage is admitted.
         // Otherwise a later fork failure leaves the prompt in a dead group.
@@ -51,12 +52,13 @@ void silt_job_finish(int pid) {
         } else if (silt_tty_set_foreground(neva_tty_handle(), g_children[index].group)
                    != NEVA_STATUS_OK) {
             silt_pipeline_abort();
-            g_job_enabled = 0;
-            return;
+            errno = EIO;
+            return -1;
         }
     }
-    if (!g_pipeline_active) silt_pipeline_end();
+    int result = g_pipeline_active ? 0 : silt_pipeline_end();
     g_job_enabled = 0;
+    return result;
 }
 
 static uint32_t session_remote(void) {
@@ -72,45 +74,58 @@ void silt_pipeline_begin(void) {
     g_pipeline_foreground = 0;
 }
 
-static void child_discard_suspended(int index) {
-    SiltChild* child = &g_children[index];
-    if (!child->process || !child->suspended) return;
-    (void)sys_rpc(child->process, PROCESS_RPC_TERMINATE, 127, 0);
-    NevaWaitResult waited = sys_wait_capability(
-        child->process, WAIT_REPORT_EXITED, NEVA_DEADLINE_INFINITE);
-    (void)waited;
-    child_remove(index);
-}
-
-void silt_pipeline_end(void) {
+int silt_pipeline_end(void) {
     if (g_pipeline_foreground && g_pipeline_group
         && silt_tty_set_foreground(neva_tty_handle(), g_pipeline_group) != NEVA_STATUS_OK) {
         silt_pipeline_abort();
-        return;
+        errno = EIO;
+        return -1;
+    }
+    for (int index = 0; index < SILT_CHILD_MAX; index++) {
+        SiltChild* child = &g_children[index];
+        if (!child->process || !child->constructing || !child->suspended) continue;
+        if ((NevaStatus)(int64_t)sys_rpc(child->process, PROCESS_RPC_RESUME, 0, 0)
+            != NEVA_STATUS_OK) {
+            silt_pipeline_abort();
+            errno = EAGAIN;
+            return -1;
+        }
+        child->suspended = 0;
+        // A resumed prefix still belongs to construction until every stage
+        // starts. A later refusal must reclaim it as well as suspended peers.
+    }
+    for (int index = 0; index < SILT_CHILD_MAX; index++) {
+        g_children[index].constructing = 0;
     }
     g_pipeline_foreground = 0;
     g_pipeline_active = 0;
-    for (int index = 0; index < SILT_CHILD_MAX; index++) {
-        if (!g_children[index].process || !g_children[index].suspended) continue;
-        if ((NevaStatus)(int64_t)sys_rpc(
-                g_children[index].process, PROCESS_RPC_RESUME, 0, 0)
-            == NEVA_STATUS_OK) {
-            g_children[index].suspended = 0;
-        } else {
-            child_discard_suspended(index);
-        }
-    }
     if (g_pipeline_group) (void)sys_handle_close(g_pipeline_group);
     g_pipeline_group = NEVA_INVALID_HANDLE;
     g_pipeline_leader = 0;
+    return 0;
 }
 
 void silt_pipeline_abort(void) {
     g_pipeline_active = 0;
     g_pipeline_foreground = 0;
     g_job_enabled = 0;
+    // Stop every construction member before waiting for any one member.
+    // Existing jobs have cleared constructing and retain their capabilities.
     for (int index = 0; index < SILT_CHILD_MAX; index++) {
-        child_discard_suspended(index);
+        SiltChild* child = &g_children[index];
+        if (child->process && child->constructing) {
+            (void)sys_rpc(child->process, PROCESS_RPC_TERMINATE, 127, 0);
+        }
+    }
+    for (int index = 0; index < SILT_CHILD_MAX; index++) {
+        SiltChild* child = &g_children[index];
+        if (!child->process || !child->constructing) continue;
+        NevaWaitResult waited;
+        do {
+            waited = sys_wait_capability(
+                child->process, WAIT_REPORT_EXITED, NEVA_DEADLINE_INFINITE);
+        } while (waited.status == NEVA_STATUS_INTERRUPTED);
+        child_remove(index);
     }
     if (g_pipeline_group) (void)sys_handle_close(g_pipeline_group);
     g_pipeline_group = NEVA_INVALID_HANDLE;
@@ -170,6 +185,7 @@ static int child_insert(pid_t pid, uint32_t process, int suspended) {
             .pid = pid,
             .process = process,
             .suspended = (uint8_t)suspended,
+            .constructing = (uint8_t)suspended,
             .pgid = g_pipeline_leader,
             .group = retained_group,
         };

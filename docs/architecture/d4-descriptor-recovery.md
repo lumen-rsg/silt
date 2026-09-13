@@ -175,3 +175,7 @@ EIO, and full controlling-terminal/PTY semantics require separate acceptance.
 The high-descriptor input-buffer limit described above and signal interruption
 of other descriptor-construction paths also remain open. These results do not
 claim full upstream/POSIX conformance or physical ARM qualification.
+
+The subsequent [admission-recovery record](d4-admission-recovery.md) qualifies
+selected terminal-handoff and stage-resume refusals, including resumed-prefix
+cleanup. The other remaining boundaries above still apply.

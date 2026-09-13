@@ -156,7 +156,10 @@ F_SETFL explicitly returns ENOTSUP. See Neva's
   cover process-quota refusal, partial pipeline cleanup, terminal recovery and
   existing-job preservation. Sixty-one [descriptor-recovery checks](d4-descriptor-recovery.md)
   cover full-table pipe/open refusal, partial-job cleanup, preserved streams,
-  permanent closes and refill. Broader signal-arrival cases and other resource
+  permanent closes and refill. The [admission-refusal gate](d4-admission-recovery.md)
+  covers terminal handoff and first/middle/final stage-resume refusal, including
+  cleanup of a resumed prefix and preservation of an unrelated job.
+  Broader signal-arrival cases and other resource
   failures remain open. The bounded libc interruption-cleanup evidence remains in Neva's
   `docs/architecture/d4-interruption-cleanup.md`.
 - Subsequent pager retry and lifetime-owned ASID corrections passed consecutive

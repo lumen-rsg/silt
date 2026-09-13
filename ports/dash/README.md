@@ -21,8 +21,10 @@ Patch 0004 unwinds failed pipeline construction; patch 0005 releases the
 input guard around blocking reads to close the pending-check/read SIGINT race.
 Patch 0006 preserves redirection targets and closes new sources when saving a
 target fails, and permits closing-only `exec` redirections without a spare fd.
-The source preparation script applies all six patches to the checked archive
-(patchset 11). See `docs/architecture/d4-descriptor-recovery.md` for the bounded
-descriptor-exhaustion acceptance.
+Patch 0007 propagates terminal-handoff and stage-resume refusal through Dash's
+construction exception guard, including standalone external jobs. The source
+preparation script applies all seven patches to the checked archive (patchset 12).
+See `docs/architecture/d4-descriptor-recovery.md` and
+`docs/architecture/d4-admission-recovery.md` for their bounded acceptance.
 
 See `docs/plans/dash-port.md` for the enablement and acceptance sequence.

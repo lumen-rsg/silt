@@ -322,7 +322,7 @@ static int background_checks(void) {
         pid_t child = fork();
         if (!child) _exit(background_child(operation));
         if (child < 0) { result = 27; break; }
-        silt_job_finish(child);
+        if (silt_job_finish(child) < 0) { result = 27; break; }
         int status;
         if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status)) {
             neva_print("D4_CLEANUP: background status="); neva_print_int(status); neva_putc('\n');

@@ -442,6 +442,20 @@ terminal cycles, 160 prompt interrupts and four service crashes per run.
 D4 remains open for other construction-phase failures, input-buffer descriptor
 pressure, signal-arrival cases and full terminal/PTY session semantics.
 
+Admission-recovery follow-up, 2026-09-13: finish/end hooks now report terminal
+handoff and deferred-resume refusal to Dash. Construction retains every member
+until all resumes succeed, so abort also terminates and reaps an already
+resumed prefix. Standalone subshells and external jobs use the same failure
+reporting. Patchset 12 retains the Dash construction guard through commit.
+The [admission-recovery record](../architecture/d4-admission-recovery.md)
+documents the actual-image request injector, old-image prompt-loss controls,
+26 refusals per target run, unrelated-job preservation and quota/pipe refill.
+All eight host gates pass. Six fresh-media pairs on 1/4/8/8/8/8 CPUs each pass
+311/311 full-rootfs checks and 142/142 admission checks; all artifact, source
+and per-run symbol hashes match. The kernel remains unchanged.
+D4 remains open for other allocation and signal-arrival failures and full
+terminal/PTY rules.
+
 ## Milestone D5: `/bin/sh` release
 
 - Run upstream dash tests on Linux as the reference and under Neva/QEMU as the

@@ -128,7 +128,7 @@ static int run_case(int operation, int disposition, int tostop,
     pid_t child = fork();
     if (child == 0) _exit(child_check(operation, disposition, parent_group));
     if (child < 0) return 2;
-    silt_job_finish(child);
+    if (silt_job_finish(child) < 0) return 2;
     int status;
     if (waitpid(child, &status, WUNTRACED) != child) return 3;
     int expect_stop = disposition == DEFAULT && (operation != WRITE || tostop);
