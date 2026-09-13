@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare dash and configure a freestanding Silt ARM64 Meson build."""
+"""Prepare GNU coreutils, dash and configure a freestanding Silt ARM64 Meson build."""
 
 from __future__ import annotations
 
@@ -98,6 +98,8 @@ def main() -> int:
     source_dir = Path(__file__).resolve().parent.parent
     build_dir = Path(args.build_dir).expanduser().resolve()
     subprocess.run([str(source_dir / "tools" / "prepare_dash.sh")], check=True)
+
+    subprocess.run(["python3", str(source_dir / "tools/prepare_coreutils.py")], check=True)
 
     compiler = find_compiler()
     cross_file = write_cross_file(build_dir, compiler)

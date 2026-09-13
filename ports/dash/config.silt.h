@@ -32,6 +32,7 @@
 #define HAVE_KILLPG 1
 #define HAVE_MEMRCHR 1
 #define HAVE_STRTOD 1
+#define HAVE_STPCPY 1
 #define HAVE_STRSIGNAL 1
 #define HAVE_WAIT3 1
 

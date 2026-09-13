@@ -5,7 +5,7 @@ microkernel. Neva owns the kernel mechanism and frozen capability ABI; Silt
 owns the EL0 runtime, POSIX compatibility personality, services, shells,
 utilities, system policy, and filesystem image.
 
-The first userland milestone is a port of dash as `/bin/sh`. The existing
+Dash is released as `/bin/sh`; ten GNU coreutils commands are now available. The existing
 Neva shell (`nsh`) remains the bounded recovery and diagnostics shell.
 
 ## Current milestone
@@ -16,6 +16,9 @@ The repository currently provides:
   diagnostic utilities, `/bin/sh`, `/bin/dash`, and `/bin/nsh`;
 - an end-to-end QEMU gate that boots that exact image into `/bin/sh` on Neva, retains `nsh`,
   exercises service-backed input and system information, and verifies teardown;
+- GNU coreutils 9.11 `echo`, `basename`, `dirname`, `cat`, `head`, finite `tail`,
+  C-locale `wc`, `pwd`, `printenv`, and `yes`, built from pinned upstream sources
+  with command hardlinks and GNU/Linux comparison tests;
 - a reproducible, hash-pinned dash 0.5.13.5 source preparation step;
 - a freestanding ARM64 cross-build that compiles every dash translation unit,
   links a Silt-owned libc baseline, and rejects unresolved process symbols;
@@ -82,10 +85,15 @@ Meson shortcut is:
 meson compile -C build run
 ```
 
-`tools/setup_meson.py` downloads the official dash release tarball, verifies
-its SHA-256 digest, generates dash's derived sources with the host compiler,
+`tools/setup_meson.py` downloads the pinned dash and GNU coreutils release archives, verifies
+their SHA-256 digests, generates dash's derived sources with the host compiler,
 and configures the freestanding ARM64 build. Network access is only needed
 when the pinned tarball is absent from `subprojects/packagecache/`.
+
+The [coreutils port](ports/coreutils/README.md) documents the supported command profiles,
+the Linux reference build and the QEMU gate. Use `/bin/echo` to select GNU echo
+explicitly; an unqualified `echo` remains Dash's builtin. The
+[coreutils plan](docs/plans/coreutils-port.md) tracks the next filesystem and text command slices.
 
 ## Project layout
 

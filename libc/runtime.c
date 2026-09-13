@@ -95,6 +95,18 @@ int getgroups(int capacity, gid_t groups[]) {
     return count;
 }
 
+char* getenv(const char* name) {
+    if (!name || !*name || strchr(name, '=')) return NULL;
+    size_t length = strlen(name);
+    for (size_t index = 0; g_environment[index]; index++) {
+        if (strncmp(g_environment[index], name, length) == 0
+            && g_environment[index][length] == '=') {
+            return g_environment[index] + length + 1U;
+        }
+    }
+    return NULL;
+}
+
 int putenv(char* assignment) {
     if (!assignment || !strchr(assignment, '=')) {
         errno = EINVAL;
@@ -340,3 +352,5 @@ int iswblank(wint_t character) {
 int iswspace(wint_t character) {
     return character == ' ' || (character >= '\t' && character <= '\r');
 }
+
+int getpagesize(void) { return 4096; }

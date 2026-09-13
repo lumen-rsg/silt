@@ -111,7 +111,10 @@ silt_libc_sources = files(
   'libc/ctype.c',
   'libc/descriptors.c',
   'libc/format.c',
+  'libc/stdio.c',
+  'libc/exit.c',
   'libc/memory.c',
+  'libc/integer.c',
   'libc/process.c',
   'libc/runtime.c',
   'libc/setjmp.S',
@@ -210,7 +213,6 @@ silt_app_names = [
   'check-pipes',
   'check-signals',
   'check-terminal',
-  'echo',
   'false',
   'id',
   'meminfo',
@@ -322,8 +324,29 @@ foreach app_name : silt_app_names
   silt_app_targets += {app_name: app_target}
 endforeach
 
+subdir('ports/coreutils')
+coreutils_app = custom_target(
+  'silt-coreutils-app',
+  output: 'coreutils.elf',
+  command: [cross_ld] + silt_app_link_args + [
+    '--start-group', coreutils_commands, coreutils_support, silt_libc, neva_libneva,
+    '--end-group', '-o', '@OUTPUT@',
+  ],
+  depends: coreutils_commands + [coreutils_support, silt_libc],
+)
+test('coreutils-linked-symbol-closure', python,
+  args: [files('tools/audit_dash_link.py'), '--nm', cross_nm.full_path(), coreutils_app])
+silt_app_targets += {'coreutils': coreutils_app}
+silt_app_names += ['coreutils']
+
 rootfs_manifest = files('rootfs/manifest.json')
 rootfs_sources = files(
+  'rootfs/boot/c1/lines',
+  'rootfs/boot/c1/binary',
+  'rootfs/boot/c1/long',
+  'rootfs/boot/c1/empty',
+
+  'rootfs/usr/share/licenses/coreutils/COPYING',
   'rootfs/boot/dash-d2.sh',
   'rootfs/boot/d5-conformance.sh',
   'rootfs/boot/d5/bad',
@@ -420,6 +443,7 @@ summary(
   {
     'dash version': '0.5.13.5',
     'dash mode': 'D5 /bin/sh release',
+    'coreutils': 'GNU 9.11 C2a: 10 commands including pwd, printenv and yes',
     'job control': 'enabled through capability-scoped process groups and ttyd',
     'line editing': 'disabled (dash SMALL configuration)',
     'Neva source': neva_source_dir,
@@ -428,3 +452,46 @@ summary(
   },
   section: 'Silt port status',
 )
+
+foreach fixture : ['stdio', 'exit', 'integer', 'read', 'cwd']
+  fixture_app = executable('coreutils-' + fixture + '-test',
+    'tests/coreutils_' + fixture + '.c', native: true,
+    c_args: ['-Wall', '-Wextra', '-Werror', '-fno-builtin'], install: false)
+  test('coreutils-' + fixture, fixture_app)
+endforeach
+
+test('coreutils-image', python,
+  args: [files('tools/test_coreutils_image.py'), silt_rootfs, coreutils_app],
+  depends: silt_rootfs)
+run_target('coreutils-qemu-test',
+  command: [python, files('tools/test_coreutils.py'),
+    '--reference', meson.current_build_dir() / 'coreutils-reference/build/src',
+    '--neva-source', neva_source_root, '--neva-build', neva_build_root,
+    '--rootfs', silt_rootfs, '--smp', '4',
+    '--output', meson.current_build_dir() / 'coreutils-c0'],
+  depends: silt_rootfs)
+run_target('coreutils-streams-qemu-test',
+  command: [python, files('tools/test_coreutils_streams.py'),
+    '--reference', meson.current_build_dir() / 'coreutils-reference/build/src',
+    '--neva-source', neva_source_root, '--neva-build', neva_build_root,
+    '--rootfs', silt_rootfs, '--smp', '4',
+    '--output', meson.current_build_dir() / 'coreutils-c1'],
+  depends: silt_rootfs)
+
+coreutils_environment_reference = executable('coreutils-environment-reference',
+  'tests/coreutils_environment.c', native: true,
+  c_args: ['-Wall', '-Wextra', '-Werror'], install: false)
+
+coreutils_path_test = executable('coreutils-path-test', 'tests/coreutils_path.c',
+  native: true, include_directories: include_directories(neva_source_dir / 'ports'),
+  c_args: ['-Wall', '-Wextra', '-Werror'], install: false)
+test('coreutils-path', coreutils_path_test)
+
+run_target('coreutils-inspection-qemu-test',
+  command: [python, files('tools/test_coreutils_inspection.py'),
+    '--reference', meson.current_build_dir() / 'coreutils-reference/build/src',
+    '--neva-source', neva_source_root, '--neva-build', neva_build_root,
+    '--rootfs', silt_rootfs, '--smp', '4',
+    '--environment-reference', coreutils_environment_reference,
+    '--output', meson.current_build_dir() / 'coreutils-c2a'],
+  depends: [silt_rootfs, coreutils_environment_reference])

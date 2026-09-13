@@ -67,6 +67,7 @@ silt_pipeline_abort
 silt_pipeline_begin
 silt_pipeline_end
 stat
+stpcpy
 stpncpy
 strcasecmp
 strchr

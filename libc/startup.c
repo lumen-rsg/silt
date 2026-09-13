@@ -1,6 +1,7 @@
 #include "silt_internal.h"
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 extern int main(int argc, char* argv[]);
@@ -17,5 +18,5 @@ __attribute__((noreturn)) void silt_start(int argc, char* argv[],
         silt_environment_exec_restore(info);
         if (silt_descriptors_exec_restore(info) < 0) _exit(127);
     }
-    _exit(main(argc, argv));
+    exit(main(argc, argv));
 }

@@ -4,7 +4,10 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include "coreutils-env.h"
 
 static volatile sig_atomic_t g_sigpipe;
 static void catch_pipe(int signal) { (void)signal; g_sigpipe++; }
@@ -276,7 +279,92 @@ static int run_checks(void) {
     return 0;
 }
 
+// Inspect binary pipeline/redirection output without the console's NUL filter.
+static int dump_hex(void) {
+    const char* hex = "0123456789abcdef";
+    unsigned char buffer[64];
+    ssize_t count;
+    while ((count = read(0, buffer, sizeof(buffer))) != 0) {
+        if (count < 0) { if (errno == EINTR) continue; return 1; }
+        for (ssize_t index = 0; index < count; index++) {
+            char pair[2] = {hex[buffer[index] >> 4], hex[buffer[index] & 15]};
+            for (size_t done = 0; done < 2;) {
+                ssize_t written = write(1, pair + done, 2 - done);
+                if (written < 0 && errno == EINTR) continue;
+                if (written <= 0) return 1;
+                done += (size_t)written;
+            }
+        }
+    }
+    return write(1, "\n", 1) == 1 ? 0 : 1;
+}
+
+static int digest_input(void) {
+    unsigned char buffer[512];
+    uint64_t size = 0;
+    uint64_t hash = UINT64_C(14695981039346656037);
+    ssize_t count;
+    while ((count = read(0, buffer, sizeof(buffer))) != 0) {
+        if (count < 0) { if (errno == EINTR) continue; return 1; }
+        size += (uint64_t)count;
+        for (ssize_t i = 0; i < count; i++) hash = (hash ^ buffer[i]) * UINT64_C(1099511628211);
+    }
+    char output[64];
+    int length = snprintf(output, sizeof(output), "%llu:%llx\n",
+                          (unsigned long long)size, (unsigned long long)hash);
+    return write(1, output, (size_t)length) == length ? 0 : 1;
+}
+
+static int stream_metadata(void) {
+    struct stat reader, writer, file, alias, other;
+    int ends[2];
+    if (sizeof(ino_t) != 8 || sizeof(dev_t) != 8 || pipe(ends) < 0) return 1;
+    if (fstat(ends[0], &reader) || fstat(ends[1], &writer)
+        || !S_ISFIFO(reader.st_mode) || !S_ISFIFO(writer.st_mode)) return 2;
+    if (close(ends[0]) || close(ends[1])) return 3;
+    errno = 0;
+    if (fstat(ends[0], &reader) != -1 || errno != EBADF) return 4;
+    int fd = open("/bin/cat", O_RDONLY);
+    if (fd < 0 || fstat(fd, &file) || close(fd)
+        || stat("/bin/coreutils", &alias) || stat("/boot/c1/binary", &other)) return 5;
+    if (!S_ISREG(file.st_mode) || file.st_ino == 0 || file.st_dev == 0
+        || file.st_ino != alias.st_ino || file.st_dev != alias.st_dev
+        || file.st_ino == other.st_ino || other.st_size != 20741) return 6;
+    fd = open("/tmp/cu", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0 || fstat(fd, &other) || close(fd) || !S_ISREG(other.st_mode)
+        || other.st_ino <= UINT32_MAX || other.st_dev <= UINT32_MAX
+        || file.st_dev == other.st_dev) return 7;
+    if (stat("/tmp", &reader) || !S_ISDIR(reader.st_mode)
+        || reader.st_dev != other.st_dev) return 9;
+    if (allocation_rollback()) return 8;
+    return 0;
+}
+
+static int cwd_contract(void) {
+    char* original = getcwd(NULL, 0);
+    if (!original || original[0] != '/') return 1;
+    char sentinel = 'x';
+    errno = 0;
+    if (getcwd(&sentinel, 0) || errno != ERANGE || sentinel != 'x') return 2;
+    errno = 0;
+    if (getcwd(NULL, 1) || errno != ERANGE) return 3;
+    if (chdir("/boot/c1/../c1//") != 0) return 4;
+    char current[256];
+    if (!getcwd(current, sizeof(current)) || strcmp(current, "/boot/c1")) return 5;
+    if (chdir("/absent") != -1 || !getcwd(current, sizeof(current))
+        || strcmp(current, "/boot/c1")) return 6;
+    if (chdir(original)) return 7;
+    free(original);
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
+    if (argc >= 3 && strcmp(argv[1], "env") == 0)
+        return coreutils_test_environment("/bin/printenv", argv + 2);
+    if (argc == 2 && strcmp(argv[1], "cwd") == 0) return cwd_contract();
+    if (argc == 2 && strcmp(argv[1], "metadata") == 0) return stream_metadata();
+    if (argc == 2 && strcmp(argv[1], "digest") == 0) return digest_input();
+    if (argc == 2 && strcmp(argv[1], "hex") == 0) return dump_hex();
     if (argc == 2 && strcmp(argv[1], "write") == 0) return write(1, "exec-ok", 7) == 7 ? 0 : 1;
     if (argc == 2 && strcmp(argv[1], "park") == 0) {
         for (;;) sys_sleep(1000);

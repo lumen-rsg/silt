@@ -1,0 +1,10 @@
+{
+  "name": "coreutils",
+  "version": "9.11",
+  "revision": "c01fd163a47468a8296fb369f5233853bb551bb6",
+  "source_url": "https://ftp.gnu.org/gnu/coreutils/coreutils-9.11.tar.xz",
+  "sha256": "394024eda0a5955217ceda9cd1201e65dc8fa3aa29c2951135a49521d57c3cc3",
+  "license": "GPL-3.0-or-later",
+  "announcement": "https://lists.gnu.org/archive/html/coreutils-announce/2026-04/msg00000.html",
+  "gnulib_revision": "fb7312fa8d3df29f0ca0678f669b9a5b88a078ec"
+}

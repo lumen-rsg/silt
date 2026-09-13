@@ -1,3 +1,5 @@
+#include "path-normalize.h"
+#include "cwd-copy.h"
 #include "libneva.h"
 #include "filesystem_service.h"
 #include "byte_stream.h"
@@ -95,62 +97,7 @@ static uint32_t root_handle(void) {
 }
 
 static int normalize_path(const char* path, char output[NEVA_FS_PATH_MAX + 1U]) {
-    if (!path || !path[0]) {
-        errno = ENOENT;
-        return -1;
-    }
-    char combined[NEVA_FS_PATH_MAX + 1U];
-    size_t length = strlen(path);
-    if (path[0] == '/') {
-        if (length > NEVA_FS_PATH_MAX) {
-            errno = ENAMETOOLONG;
-            return -1;
-        }
-        memcpy(combined, path, length + 1U);
-    } else {
-        size_t cwd_length = strlen(g_cwd);
-        size_t separator = cwd_length > 1U ? 1U : 0U;
-        if (cwd_length + separator + length > NEVA_FS_PATH_MAX) {
-            errno = ENAMETOOLONG;
-            return -1;
-        }
-        memcpy(combined, g_cwd, cwd_length);
-        if (separator) combined[cwd_length++] = '/';
-        memcpy(combined + cwd_length, path, length + 1U);
-    }
-
-    size_t written = 1U;
-    output[0] = '/';
-    output[1] = '\0';
-    const char* cursor = combined;
-    while (*cursor) {
-        while (*cursor == '/') cursor++;
-        if (!*cursor) break;
-        const char* component = cursor;
-        while (*cursor && *cursor != '/') cursor++;
-        size_t component_length = (size_t)(cursor - component);
-        if (component_length == 1U && component[0] == '.') continue;
-        if (component_length == 2U && component[0] == '.'
-            && component[1] == '.') {
-            if (written > 1U) {
-                written--;
-                while (written > 1U && output[written - 1U] != '/') written--;
-                output[written] = '\0';
-            }
-            continue;
-        }
-        if (component_length > NEVA_FS_COMPONENT_MAX
-            || written + (written > 1U ? 1U : 0U) + component_length
-                   > NEVA_FS_PATH_MAX) {
-            errno = ENAMETOOLONG;
-            return -1;
-        }
-        if (written > 1U) output[written++] = '/';
-        memcpy(output + written, component, component_length);
-        written += component_length;
-        output[written] = '\0';
-    }
-    return 0;
+    return silt_normalize_path(g_cwd, path, output);
 }
 
 static NevaServiceResult resolve_path(const char* path, uint32_t flags,
@@ -1132,9 +1079,12 @@ uint32_t silt_descriptor_tty(int descriptor) {
     return 0;
 }
 
+_Static_assert(sizeof(ino_t) == 8 && sizeof(dev_t) == 8, "Silt requires full service identities");
+
 static void fill_file_stat(const NevaRemoteFileInfoV1* info, struct stat* status) {
     memset(status, 0, sizeof(*status));
     status->st_ino = (ino_t)info->object_id;
+    status->st_dev = (dev_t)info->volume_id;
     status->st_mode = S_IFREG | (mode_t)(info->mode & 07777U);
     status->st_nlink = 1;
     status->st_uid = info->uid;
@@ -1199,7 +1149,13 @@ int fstat(int descriptor, struct stat* status) {
             return -1;
         }
         status->st_ino = (ino_t)info.object_id;
+        status->st_dev = (dev_t)info.volume_id;
         status->st_mode = S_IFDIR | 0555;
+        status->st_nlink = 1;
+        return 0;
+    }
+    if (description->kind == SILT_DESCRIPTION_PIPE_READ || description->kind == SILT_DESCRIPTION_PIPE_WRITE) {
+        status->st_mode = S_IFIFO | 0600;
         status->st_nlink = 1;
         return 0;
     }
@@ -1218,6 +1174,9 @@ int stat(const char* path, struct stat* status) {
     if (normalize_path(path, normalized) < 0) return -1;
     if (strcmp(normalized, "/") == 0) {
         memset(status, 0, sizeof(*status));
+        // Device zero is synthetic. Reserve inode one for the virtual root,
+        // distinct from the zero identity of synthetic character devices.
+        status->st_ino = 1;
         status->st_mode = S_IFDIR | 0555;
         status->st_nlink = 1;
         return 0;
@@ -1251,6 +1210,7 @@ int stat(const char* path, struct stat* status) {
             && info.version == NEVA_FILESYSTEM_ABI_VERSION && info.size == sizeof(info)) {
             memset(status, 0, sizeof(*status));
             status->st_ino = (ino_t)info.object_id;
+            status->st_dev = (dev_t)info.volume_id;
             status->st_mode = S_IFDIR | 0555;
             status->st_nlink = 1;
             return 0;
@@ -1274,21 +1234,7 @@ int lstat(const char* path, struct stat* status) {
 }
 
 char* getcwd(char* buffer, size_t size) {
-    size_t required = strlen(g_cwd) + 1U;
-    if (!buffer) {
-        buffer = malloc(size ? size : required);
-        if (!buffer) {
-            errno = ENOMEM;
-            return NULL;
-        }
-        if (!size) size = required;
-    }
-    if (size < required) {
-        errno = ERANGE;
-        return NULL;
-    }
-    memcpy(buffer, g_cwd, required);
-    return buffer;
+    return silt_copy_cwd(g_cwd, buffer, size);
 }
 
 int chdir(const char* path) {

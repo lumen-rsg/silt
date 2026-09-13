@@ -1,0 +1,38 @@
+--- a/src/cat.c
++++ b/src/cat.c
+@@ -32,16 +32,7 @@
+ #endif
+ #include <sys/ioctl.h>
+ 
+-#include "system.h"
+-#include "alignalloc.h"
+-#include "assure.h"
+-#include "ioblksize.h"
+-#include "fadvise.h"
+-#include "full-write.h"
+-#include "isapipe.h"
+-#include "splice.h"
+-#include "unistd--.h"
+-#include "xbinary-io.h"
++#include "silt-streams.h"
+ 
+ /* The official name of this program (e.g., no 'g' prefix).  */
+ #define PROGRAM_NAME "cat"
+--- a/src/head.c
++++ b/src/head.c
+@@ -29,14 +29,7 @@
+ #include <getopt.h>
+ #include <sys/types.h>
+ 
+-#include "system.h"
+-
+-#include "assure.h"
+-#include "c-ctype.h"
+-#include "full-read.h"
+-#include "stat-size.h"
+-#include "xbinary-io.h"
+-#include "xdectoint.h"
++#include "silt-streams.h"
+ 
+ /* The official name of this program (e.g., no 'g' prefix).  */
+ #define PROGRAM_NAME "head"

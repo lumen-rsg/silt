@@ -214,68 +214,17 @@ char* strtok(char* string, const char* separators) {
     return token;
 }
 
-static int digit_value(char character) {
-    if (character >= '0' && character <= '9') return character - '0';
-    if (character >= 'a' && character <= 'z') return character - 'a' + 10;
-    if (character >= 'A' && character <= 'Z') return character - 'A' + 10;
-    return -1;
+void* memchr(const void* memory, int character, size_t size) {
+    const unsigned char* bytes = memory;
+    for (size_t index = 0; index < size; index++) {
+        if (bytes[index] == (unsigned char)character) return (void*)(bytes + index);
+    }
+    return NULL;
 }
 
-unsigned long long strtoull(const char* string, char** end, int base) {
-    const char* cursor = string;
-    while (*cursor == ' ' || (*cursor >= '\t' && *cursor <= '\r')) cursor++;
-    int negative = *cursor == '-';
-    if (*cursor == '+' || *cursor == '-') cursor++;
-    if ((base == 0 || base == 16) && cursor[0] == '0'
-        && (cursor[1] == 'x' || cursor[1] == 'X')) {
-        base = 16;
-        cursor += 2;
-    } else if (base == 0) {
-        base = cursor[0] == '0' ? 8 : 10;
-    }
-    if (base < 2 || base > 36) {
-        errno = EINVAL;
-        if (end) *end = (char*)string;
-        return 0;
-    }
-    unsigned long long value = 0;
-    const char* first = cursor;
-    for (int digit; (digit = digit_value(*cursor)) >= 0 && digit < base; cursor++) {
-        unsigned long long limit = ULLONG_MAX / (unsigned)base;
-        if (value > limit
-            || (value == limit
-                && (unsigned)digit > ULLONG_MAX % (unsigned)base)) {
-            value = ULLONG_MAX;
-            errno = ERANGE;
-            while ((digit = digit_value(cursor[1])) >= 0 && digit < base) cursor++;
-            cursor++;
-            break;
-        }
-        value = value * (unsigned)base + (unsigned)digit;
-    }
-    if (end) *end = (char*)(cursor == first ? string : cursor);
-    return negative ? 0ULL - value : value;
-}
-
-long long strtoll(const char* string, char** end, int base) {
-    const char* cursor = string;
-    while (*cursor == ' ' || (*cursor >= '\t' && *cursor <= '\r')) cursor++;
-    int negative = *cursor == '-';
-    unsigned long long magnitude = strtoull(string, end, base);
-    if (errno == ERANGE) return negative ? LLONG_MIN : LLONG_MAX;
-    if (negative) {
-        if (magnitude > (unsigned long long)LLONG_MAX + 1ULL) {
-            errno = ERANGE;
-            return LLONG_MIN;
-        }
-        return magnitude == (unsigned long long)LLONG_MAX + 1ULL
-            ? LLONG_MIN : -(long long)magnitude;
-    }
-    if (magnitude > LLONG_MAX) {
-        errno = ERANGE;
-        return LLONG_MAX;
-    }
-    return (long long)magnitude;
+char* stpcpy(char* destination, const char* source) {
+    while ((*destination = *source++)) destination++;
+    return destination;
 }
 
 int atoi(const char* string) {

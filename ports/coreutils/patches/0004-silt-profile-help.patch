@@ -1,0 +1,165 @@
+--- a/src/tail.c
++++ b/src/tail.c
+@@ -264,95 +264,8 @@
+     emit_try_help ();
+   else
+     {
+-      printf (_("\
+-Usage: %s [OPTION]... [FILE]...\n\
+-"),
+-              program_name);
+-      printf (_("\
+-Print the last %d lines of each FILE to standard output.\n\
+-With more than one FILE, precede each with a header giving the file name.\n\
+-"), DEFAULT_N_LINES);
+-
+-      emit_stdin_note ();
+-      emit_mandatory_arg_note ();
+-
+-     oputs (_("\
+-  -c, --bytes=[+]NUM\n\
+-         output the last NUM bytes;\n\
+-         or use -c +NUM to output starting with byte NUM of each file\n\
+-"));
+-     oputs (_("\
+-      --debug\n\
+-         indicate which --follow implementation is used\n\
+-"));
+-     oputs (_("\
+-  -f, --follow[={name|descriptor}]\n\
+-         output appended data as the file grows;\n\
+-         an absent option argument means 'descriptor'\n\
+-"));
+-     oputs (_("\
+-  -F\n\
+-         same as --follow=name --retry\n\
+-"));
+-     oprintf (_("\
+-  -n, --lines=[+]NUM\n\
+-         output the last NUM lines, instead of the last %d;\n\
+-         or use -n +NUM to skip NUM-1 lines at the start\n\
+-"), DEFAULT_N_LINES);
+-     oprintf (_("\
+-      --max-unchanged-stats=N\n\
+-         with --follow=name, reopen a FILE which has not\n\
+-         changed size after N (default %d) iterations\n\
+-         to see if it has been unlinked or renamed\n\
+-         (this is the usual case of rotated log files);\n\
+-         with inotify, this option is rarely useful\n\
+-"), DEFAULT_MAX_N_UNCHANGED_STATS_BETWEEN_OPENS);
+-     oputs (_("\
+-      --pid=PID\n\
+-         with -f, exit after PID no longer exists;\n\
+-         can be repeated to watch multiple processes\n\
+-"));
+-     oputs (_("\
+-  -q, --quiet, --silent\n\
+-         never output headers giving file names\n\
+-"));
+-     oputs (_("\
+-      --retry\n\
+-         keep trying to open a file if it is inaccessible\n\
+-"));
+-     oputs (_("\
+-  -s, --sleep-interval=N\n\
+-         with -f, sleep for approximately N seconds\n\
+-         (default 1.0) between iterations;\n\
+-         with inotify and --pid=P,\n\
+-         check process P at least once every N seconds\n\
+-"));
+-     oputs (_("\
+-  -v, --verbose\n\
+-         always output headers giving file names\n\
+-"));
+-     oputs (_("\
+-  -z, --zero-terminated\n\
+-         line delimiter is NUL, not newline\n\
+-"));
+-     oputs (HELP_OPTION_DESCRIPTION);
+-     oputs (VERSION_OPTION_DESCRIPTION);
+-     fputs (_("\
+-\n\
+-NUM may have a multiplier suffix:\n\
+-b 512, kB 1000, K 1024, MB 1000*1000, M 1024*1024,\n\
+-GB 1000*1000*1000, G 1024*1024*1024, and so on for T, P, E, Z, Y, R, Q.\n\
+-Binary prefixes can be used, too: KiB=K, MiB=M, and so on.\n\
+-\n\
+-"), stdout);
+-     fputs (_("\
+-With --follow (-f), tail defaults to following the file descriptor, which\n\
+-means that even if a tail'ed file is renamed, tail will continue to track\n\
+-its end.  This default behavior is not desirable when you really want to\n\
+-track the actual name of the file, not the file descriptor (e.g., log\n\
+-rotation).  Use --follow=name in that case.  That causes tail to track the\n\
+-named file in a way that accommodates renaming, removal and creation.\n\
+-"), stdout);
++      fputs ("Usage: tail [OPTION]... [FILE]...\nPrint the last 10 lines of each FILE, or read standard input for FILE -.\n  -n, --lines=NUM       last NUM lines, or from line NUM with +NUM\n  -c, --bytes=NUM       last NUM bytes, or from byte NUM with +NUM\n  -q, --quiet, --silent suppress file headers\n  -v, --verbose        always print file headers\n  -z, --zero-terminated use NUL delimiters\n      --help           display this help\n      --version        display version\nSilt supports finite output. Follow, retry, PID monitoring and sleep\ninterval options are unsupported and return status 1.\n", stdout);
++      emit_size_note ();
+       emit_ancillary_info (PROGRAM_NAME);
+     }
+   exit (status);
+--- a/src/wc.c
++++ b/src/wc.c
+@@ -172,61 +172,7 @@
+     emit_try_help ();
+   else
+     {
+-      printf (_("\
+-Usage: %s [OPTION]... [FILE]...\n\
+-  or:  %s [OPTION]... --files0-from=F\n\
+-"),
+-              program_name, program_name);
+-      fputs (_("\
+-Print newline, word, and byte counts for each FILE, and a total line if\n\
+-more than one FILE is specified.  A word is a nonempty sequence of non white\n\
+-space delimited by white space characters or by start or end of input.\n\
+-"), stdout);
+-
+-      emit_stdin_note ();
+-
+-      fputs (_("\
+-\n\
+-The options below may be used to select which counts are printed, always in\n\
+-the following order: newline, word, character, byte, maximum line length.\n\
+-"), stdout);
+-      oputs (_("\
+-  -c, --bytes\n\
+-         print the byte counts\n\
+-"));
+-      oputs (_("\
+-  -m, --chars\n\
+-         print the character counts\n\
+-"));
+-      oputs (_("\
+-  -l, --lines\n\
+-         print the newline counts\n\
+-"));
+-      oputs (_("\
+-      --debug\n\
+-         indicate what line count acceleration is used\n\
+-"));
+-      oputs (_("\
+-      --files0-from=F\n\
+-         read input from the files specified by\n\
+-         NUL-terminated names in file F;\n\
+-         If F is -, read names from standard input\n\
+-"));
+-      oputs (_("\
+-  -L, --max-line-length\n\
+-         print the maximum display width\n\
+-"));
+-      oputs (_("\
+-  -w, --words\n\
+-         print the word counts\n\
+-"));
+-      oputs (_("\
+-      --total=WHEN\n\
+-         when to print a line with total counts;\n\
+-         WHEN can be: auto, always, only, never\n\
+-"));
+-      oputs (HELP_OPTION_DESCRIPTION);
+-      oputs (VERSION_OPTION_DESCRIPTION);
++      fputs ("Usage: wc [OPTION]... [FILE]...\nPrint newline, word and byte counts; FILE - means standard input.\n  -l, --lines          count newlines\n  -w, --words          count words\n  -c, --bytes          count bytes\n  -m, --chars          count characters in the single-byte C locale\n  -L, --max-line-length print maximum display width\n      --total=WHEN     auto, always, only or never\n      --debug          report line-count acceleration\n      --help           display this help\n      --version        display version\nSilt supports the single-byte C locale only, so -m counts bytes. GNU's\nextra NBSP separator is disabled by POSIXLY_CORRECT. --files0-from is\nunsupported and returns status 1.\n", stdout);
+       emit_ancillary_info (PROGRAM_NAME);
+     }
+   exit (status);

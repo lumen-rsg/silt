@@ -8,8 +8,8 @@
     "check-pipes",
     "check-signals",
     "check-terminal",
+    "coreutils",
     "dash",
-    "echo",
     "false",
     "id",
     "meminfo",
@@ -21,6 +21,10 @@
     "whoami"
   ],
   "required_paths": [
+    "boot/c1/binary",
+    "boot/c1/empty",
+    "boot/c1/lines",
+    "boot/c1/long",
     "boot/check-shebang.sh",
     "boot/d5-conformance.sh",
     "boot/d5/bad",
@@ -39,10 +43,21 @@
     "etc/os-release",
     "etc/passwd",
     "etc/profile",
-    "etc/shadow"
+    "etc/shadow",
+    "usr/share/licenses/coreutils/COPYING"
   ],
   "aliases": {
-    "sh": "dash"
+    "sh": "dash",
+    "echo": "coreutils",
+    "basename": "coreutils",
+    "dirname": "coreutils",
+    "cat": "coreutils",
+    "head": "coreutils",
+    "tail": "coreutils",
+    "wc": "coreutils",
+    "pwd": "coreutils",
+    "printenv": "coreutils",
+    "yes": "coreutils"
   },
   "executable_paths": [
     "boot/check-shebang.sh",

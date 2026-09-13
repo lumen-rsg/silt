@@ -1,0 +1,43 @@
+--- a/src/pwd.c
++++ b/src/pwd.c
+@@ -19,7 +19,7 @@
+ #include <stdio.h>
+ #include <sys/types.h>
+ 
+-#include "system.h"
++#include "silt-inspection.h"
+ #include "quote.h"
+ #include "root-dev-ino.h"
+ #include "xgetcwd.h"
+--- a/src/printenv.c
++++ b/src/printenv.c
+@@ -32,7 +32,7 @@
+ #include <sys/types.h>
+ #include <getopt.h>
+ 
+-#include "system.h"
++#include "silt-inspection.h"
+ 
+ /* Exit status for syntax errors, etc.  */
+ enum { PRINTENV_FAILURE = 2 };
+--- a/src/yes.c
++++ b/src/yes.c
+@@ -19,16 +19,9 @@
+ #include <config.h>
+ #include <stdio.h>
+ #include <sys/types.h>
+-#include <sys/uio.h>
+-
+-#include "system.h"
+-
+-#include "alignalloc.h"
+-#include "full-write.h"
+-#include "isapipe.h"
++
++#include "silt-inspection.h"
+ #include "long-options.h"
+-#include "splice.h"
+-#include "unistd--.h"
+ 
+ /* The official name of this program (e.g., no 'g' prefix).  */
+ #define PROGRAM_NAME "yes"

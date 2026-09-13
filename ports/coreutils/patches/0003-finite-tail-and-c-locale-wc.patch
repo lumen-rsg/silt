@@ -1,0 +1,457 @@
+--- a/src/tail.c
++++ b/src/tail.c
+@@ -30,23 +30,7 @@
+ #include <sys/types.h>
+ #include <signal.h>
+ 
+-#include "system.h"
+-#include "argmatch.h"
+-#include "assure.h"
+-#include "c-ctype.h"
+-#include "cl-strtod.h"
+-#include "dtimespec-bound.h"
+-#include "fcntl--.h"
+-#include "iopoll.h"
+-#include "isapipe.h"
+-#include "issymlink.h"
+-#include "posixver.h"
+-#include "quote.h"
+-#include "stat-size.h"
+-#include "stat-time.h"
+-#include "xbinary-io.h"
+-#include "xdectoint.h"
+-#include "xnanosleep.h"
++#include "silt-streams.h"
+ 
+ #if HAVE_INOTIFY
+ # include "hash.h"
+@@ -184,7 +168,7 @@
+ static enum Follow_mode follow_mode = Follow_descriptor;
+ 
+ /* If true, read from the ends of all specified files until killed.  */
+-static bool forever;
++static const bool forever = false;
+ 
+ /* If true, monitor output so we exit if pipe reader terminates.  */
+ static bool monitor_output;
+@@ -375,15 +359,18 @@
+ }
+ 
+ /* Ensure exit, either with SIGPIPE or EXIT_FAILURE status.  */
++#if !SILT_FINITE_TAIL
+ static void
+ die_pipe (void)
+ {
+   raise (SIGPIPE);
+   exit (EXIT_FAILURE);
+ }
++#endif
+ 
+ /* If the output has gone away, then terminate
+    as we would if we had written to this output.  */
++#if !SILT_FINITE_TAIL
+ static void
+ check_output_alive (void)
+ {
+@@ -393,6 +380,7 @@
+   if (iopoll (-1, STDOUT_FILENO, false) == IOPOLL_BROKEN_OUTPUT)
+     die_pipe ();
+ }
++#endif
+ 
+ MAYBE_UNUSED static bool
+ valid_file_spec (struct File_spec const *f)
+@@ -428,6 +416,7 @@
+    and blocking status BLOCKING.  READ_POS matters only for regular files,
+    and READ_POS < 0 means the position is unknown.  */
+ 
++#if !SILT_FINITE_TAIL
+ static void
+ record_open_fd (struct File_spec *f, int fd,
+                 off_t read_pos, struct stat const *st,
+@@ -446,15 +435,18 @@
+   f->n_unchanged_stats = 0;
+   f->ignore = false;
+ }
++#endif
+ 
+ /* Close the file with descriptor FD and spec F.  */
+ 
++#if !SILT_FINITE_TAIL
+ static void
+ close_fd (int fd, struct File_spec const *f)
+ {
+   if (STDIN_FILENO < fd && close (fd) < 0)
+     error (0, errno, _("closing %s (fd=%d)"), quoteaf (f->prettyname), fd);
+ }
++#endif
+ 
+ static void
+ write_header (char const *prettyname)
+@@ -953,6 +945,7 @@
+    false if FD is known to be local.  F is the file's spec.
+    If fstatfs fails, give a diagnostic and return true.
+    If fstatfs cannot be called, return true.  */
++#if !SILT_FINITE_TAIL
+ static bool
+ fremote (int fd, struct File_spec const *f)
+ {
+@@ -981,8 +974,10 @@
+ 
+   return remote;
+ }
++#endif
+ 
+ /* open/fstat F->name and handle changes.  */
++#if !SILT_FINITE_TAIL
+ static void
+ recheck (struct File_spec *f, bool blocking)
+ {
+@@ -1112,12 +1107,14 @@
+       record_open_fd (f, fd, -1, &new_stats, is_stdin ? -1 : blocking);
+     }
+ }
++#endif
+ 
+ /* Return true if any of the N_FILES files in F are live, i.e., have
+    open file descriptors, or should be checked again (see --retry).
+    When following descriptors, checking should only continue when any
+    of the files is not yet ignored.  */
+ 
++#if !SILT_FINITE_TAIL
+ static bool
+ any_live_files (const struct File_spec *f, int n_files)
+ {
+@@ -1140,9 +1137,11 @@
+ 
+   return false;
+ }
++#endif
+ 
+ /* Return true if any writers exist, even as zombies.  */
+ 
++#if !SILT_FINITE_TAIL
+ static bool
+ some_writers_exist (void)
+ {
+@@ -1162,6 +1161,7 @@
+ 
+   return 0 < nbpids;
+ }
++#endif
+ 
+ /* Tail N_FILES files forever, or until killed.
+    The pertinent information for each file is stored in an entry of F.
+@@ -1170,6 +1170,7 @@
+    If none of them have changed size in one iteration, sleep for a
+    while and try again.  Continue until the user interrupts us.  */
+ 
++#if !SILT_FINITE_TAIL
+ static void
+ tail_forever (struct File_spec *f, int n_files, double sleep_interval)
+ {
+@@ -1346,6 +1347,7 @@
+         }
+     }
+ }
++#endif
+ 
+ #if HAVE_INOTIFY
+ 
+@@ -2059,6 +2061,7 @@
+             }
+         }
+ 
++#if !SILT_FINITE_TAIL
+       if (forever)
+         {
+           if (!ok)
+@@ -2074,6 +2077,7 @@
+             }
+         }
+       else
++#endif
+         {
+           if (!is_stdin && close (fd) < 0)
+             {
+@@ -2168,7 +2172,7 @@
+   /* Set globals.  */
+   from_start = t_from_start;
+   count_lines = t_count_lines;
+-  forever = t_forever;
++  if (t_forever) silt_unsupported("tail follow mode");
+ 
+   return true;
+ }
+@@ -2187,10 +2191,7 @@
+       switch (c)
+         {
+         case 'F':
+-          forever = true;
+-          follow_mode = Follow_name;
+-          reopen_inaccessible_files = true;
+-          break;
++          silt_unsupported("tail follow mode");
+ 
+         case 'c':
+         case 'n':
+@@ -2209,26 +2210,9 @@
+ 
+         case 'f':
+         case LONG_FOLLOW_OPTION:
+-          forever = true;
+-          if (optarg == NULL)
+-            follow_mode = DEFAULT_FOLLOW_MODE;
+-          else
+-            follow_mode = XARGMATCH ("--follow", optarg,
+-                                     follow_mode_string, follow_mode_map);
+-          break;
+-
+         case RETRY_OPTION:
+-          reopen_inaccessible_files = true;
+-          break;
+-
+         case MAX_UNCHANGED_STATS_OPTION:
+-          /* --max-unchanged-stats=N */
+-          max_n_unchanged_stats_between_opens =
+-            xnumtoimax (optarg, 10, 0, COUNT_MAX, "",
+-                        _("invalid maximum number of unchanged stats"
+-                          " between opens"),
+-                        0, XTOINT_MAX_QUIET);
+-          break;
++          silt_unsupported("tail follow mode");
+ 
+         case DEBUG_PROGRAM_OPTION:
+           debug = true;
+@@ -2239,12 +2223,7 @@
+           break;
+ 
+         case PID_OPTION:
+-          if (nbpids == pids_alloc)
+-            pids = xpalloc (pids, &pids_alloc, 1,
+-                            MIN (INT_MAX, IDX_MAX), sizeof *pids);
+-          pids[nbpids++] = xdectoumax (optarg, 0, PID_T_MAX, "",
+-                                       _("invalid PID"), 0);
+-          break;
++          silt_unsupported("tail process monitoring");
+ 
+         case PRESUME_INPUT_PIPE_OPTION:
+           presume_input_pipe = true;
+@@ -2255,16 +2234,7 @@
+           break;
+ 
+         case 's':
+-          {
+-            char *ep;
+-            errno = 0;
+-            double s = cl_strtod (optarg, &ep);
+-            if (optarg == ep || *ep || ! (0 <= s))
+-              error (EXIT_FAILURE, 0,
+-                     _("invalid number of seconds: %s"), quote (optarg));
+-            *sleep_interval = dtimespec_bound (s, errno);
+-          }
+-          break;
++          silt_unsupported("tail follow interval");
+ 
+         case 'v':
+           *header_mode = always;
+@@ -2287,32 +2257,12 @@
+         }
+     }
+ 
+-  if (reopen_inaccessible_files)
+-    {
+-      if (!forever)
+-        {
+-          reopen_inaccessible_files = false;
+-          error (0, 0, _("warning: --retry ignored; --retry is useful"
+-                         " only when following"));
+-        }
+-      else if (follow_mode == Follow_descriptor)
+-        error (0, 0, _("warning: --retry only effective for the initial open"));
+-    }
+-
+-  if (pids && (!forever || (kill (pids[0], 0) < 0 && errno == ENOSYS)))
+-    {
+-      error (0, 0,
+-             _(forever
+-               ? "warning: --pid=PID is not supported on this system"
+-               : ("warning: PID ignored;"
+-                  " --pid=PID is useful only when following")));
+-      free (pids);
+-      pids = NULL;
+-    }
++
+ }
+ 
+ /* Mark as '.ignore'd each member of F that corresponds to a
+    pipe or fifo, and return true if any are not marked.  */
++#if !SILT_FINITE_TAIL
+ static bool
+ ignore_fifo_and_pipe (struct File_spec *f, int n_files)
+ {
+@@ -2342,6 +2292,7 @@
+ 
+   return some_viable;
+ }
++#endif
+ 
+ int
+ main (int argc, char **argv)
+@@ -2449,6 +2400,7 @@
+   for (int i = 0; i < n_files; i++)
+     ok &= tail_file (&F[i], n_files, n_units);
+ 
++#if !SILT_FINITE_TAIL
+   if (forever && ignore_fifo_and_pipe (F, n_files))
+     {
+       /* If stdout is a fifo or pipe, then monitor it
+@@ -2529,6 +2481,8 @@
+       tail_forever (F, n_files, sleep_interval);
+     }
+ 
++#endif
++
+   if (have_read_stdin && close (STDIN_FILENO) < 0)
+     error (EXIT_FAILURE, errno, "-");
+   main_exit (ok ? EXIT_SUCCESS : EXIT_FAILURE);
+--- a/src/wc.c
++++ b/src/wc.c
+@@ -23,22 +23,8 @@
+ #include <getopt.h>
+ #include <sys/types.h>
+ 
+-#include <argmatch.h>
+-#include <argv-iter.h>
+-#include <fadvise.h>
+-#include <physmem.h>
+-#include <readtokens0.h>
+-#include <stat-size.h>
+-#include <xbinary-io.h>
+-
+-#ifdef USE_NEON_WC_LINECOUNT
+-# include <sys/auxv.h>
+-# include <asm/hwcap.h>
+-#endif
+-
+-#include "system.h"
+-#include "cpu-supports.h"
+-#include "ioblksize.h"
++#include "silt-streams.h"
++#include "silt-wc.h"
+ #include "wc.h"
+ 
+ /* The official name of this program (e.g., no 'g' prefix).  */
+@@ -472,6 +458,7 @@
+       lines = w.lines;
+       bytes = w.bytes;
+     }
++#if !SILT_C_LOCALE
+   else if (MB_CUR_MAX > 1)
+     {
+       bool in_word = false;
+@@ -616,6 +603,7 @@
+       if (linepos > linelength)
+         linelength = linepos;
+     }
++#endif
+   else
+     {
+       bool in_word = false;
+@@ -796,7 +784,7 @@
+   char **files;
+   char *files_from = NULL;
+   struct fstatus *fstatus;
+-  struct Tokens tok;
++
+ 
+   initialize_main (&argc, &argv);
+   set_program_name (argv[0]);
+@@ -809,7 +797,7 @@
+   page_size = getpagesize ();
+   /* Line buffer stdout to ensure lines are written atomically and immediately
+      so that processes running in parallel do not intersperse their output.  */
+-  setvbuf (stdout, NULL, _IOLBF, 0);
++  /* Silt standard streams are unbuffered. */
+ 
+   posixly_correct = (getenv ("POSIXLY_CORRECT") != NULL);
+ 
+@@ -841,8 +829,7 @@
+         break;
+ 
+       case FILES0_FROM_OPTION:
+-        files_from = optarg;
+-        break;
++        silt_unsupported("wc --files0-from");
+ 
+       case TOTAL_OPTION:
+         total_mode = XARGMATCH ("--total", optarg, total_args, total_types);
+@@ -867,57 +854,9 @@
+     for (int i = 0; i <= UCHAR_MAX; i++)
+       wc_isspace[i] = isspace (i) || maybe_c32isnbspace (btoc32 (i));
+ 
+-  bool read_tokens = false;
++
+   struct argv_iterator *ai;
+-  if (files_from)
+-    {
+-      FILE *stream;
+-
+-      /* When using --files0-from=F, you may not specify any files
+-         on the command-line.  */
+-      if (optind < argc)
+-        {
+-          error (0, 0, _("extra operand %s"), quoteaf (argv[optind]));
+-          fprintf (stderr, "%s\n",
+-                   _("file operands cannot be combined with --files0-from"));
+-          usage (EXIT_FAILURE);
+-        }
+-
+-      if (streq (files_from, "-"))
+-        stream = stdin;
+-      else
+-        {
+-          stream = fopen (files_from, "r");
+-          if (stream == NULL)
+-            error (EXIT_FAILURE, errno, _("cannot open %s for reading"),
+-                   quoteaf (files_from));
+-        }
+-
+-      /* Read the file list into RAM if we can detect its size and that
+-         size is reasonable.  Otherwise, we'll read a name at a time.  */
+-      struct stat st;
+-      if (fstat (fileno (stream), &st) == 0
+-          && S_ISREG (st.st_mode)
+-          && st.st_size <= MIN (10 * 1024 * 1024, physmem_available () / 2))
+-        {
+-          read_tokens = true;
+-          readtokens0_init (&tok);
+-          if (! readtokens0 (stream, &tok) || fclose (stream) != 0)
+-            error (EXIT_FAILURE, 0, _("cannot read file names from %s"),
+-                   quoteaf (files_from));
+-          files = tok.tok;
+-          nfiles = tok.n_tok;
+-          ai = argv_iter_init_argv (files);
+-        }
+-      else
+-        {
+-          files = NULL;
+-          nfiles = 0;
+-          ai = argv_iter_init_stream (stream);
+-        }
+-    }
+-  else
+-    {
++  {
+       static char *stdin_only[] = { NULL };
+       files = (optind < argc ? argv + optind : stdin_only);
+       nfiles = (optind < argc ? argc - optind : 1);
+@@ -999,8 +938,6 @@
+   if (ok && !files_from && argv_iter_n_args (ai) == 0)
+     ok &= wc_file (NULL, &fstatus[0]);
+ 
+-  if (read_tokens)
+-    readtokens0_free (&tok);
+ 
+   if (total_mode != total_never
+       && (total_mode != total_auto || 1 < argv_iter_n_args (ai)))
