@@ -13,6 +13,7 @@
     "false",
     "id",
     "meminfo",
+    "nsh",
     "ps",
     "sysinfo",
     "true",
@@ -20,12 +21,37 @@
     "whoami"
   ],
   "required_paths": [
+    "boot/check-shebang.sh",
+    "boot/d5-conformance.sh",
+    "boot/d5/bad",
+    "boot/d5/long",
+    "boot/d5/loop",
+    "boot/d5/missing",
+    "boot/d5/nested",
+    "boot/d5/noexec",
+    "boot/d5/optional",
     "boot/dash-d2.sh",
     "boot/etc/hello.txt",
+    "boot/session",
+    "boot/session.sh",
     "etc/group",
     "etc/motd",
     "etc/os-release",
     "etc/passwd",
+    "etc/profile",
     "etc/shadow"
+  ],
+  "aliases": {
+    "sh": "dash"
+  },
+  "executable_paths": [
+    "boot/check-shebang.sh",
+    "boot/d5/bad",
+    "boot/d5/long",
+    "boot/d5/loop",
+    "boot/d5/missing",
+    "boot/d5/nested",
+    "boot/d5/optional",
+    "boot/session.sh"
   ]
 }

@@ -7,7 +7,7 @@ extern int main(int argc, char* argv[]);
 
 __attribute__((noreturn)) void silt_start(int argc, char* argv[],
                                           uintptr_t exec_info_address) {
-    const SiltExecInfoV2* info = (const SiltExecInfoV2*)exec_info_address;
+    const SiltExecInfoV3* info = (const SiltExecInfoV3*)exec_info_address;
     if (info && (info->magic != SILT_EXEC_INFO_MAGIC
         || info->version != SILT_EXEC_INFO_VERSION
         || info->total_size != sizeof(*info))) _exit(127);

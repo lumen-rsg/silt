@@ -1,5 +1,6 @@
 #include "libneva.h"
 #include "session_control.h"
+#include "filesystem_service.h"
 #include "silt_internal.h"
 #include "silt_pipeline.h"
 
@@ -261,7 +262,7 @@ static int build_argument_vector(char* const arguments[], char* bytes,
     while (arguments[count]) {
         if (count == SILT_EXEC_ARGUMENT_MAX) return -1;
         size_t length = strlen(arguments[count]) + 1U;
-        if (length == 1U || length > SILT_EXEC_BYTES_MAX - cursor) return -1;
+        if (length > SILT_EXEC_BYTES_MAX - cursor) return -1;
         memcpy(bytes + cursor, arguments[count], length);
         cursor += length;
         count++;
@@ -285,9 +286,57 @@ int execve(const char* path, char* const arguments[], char* const environment[])
         errno = E2BIG;
         return -1;
     }
-    uint32_t executable = silt_resolve_executable(path);
-    if (!executable) return -1;
-    SiltExecInfoV2 info;
+    // Iterative rewriting bounds interpreter chains without recursive stack
+    // growth. Every hop preserves argv[1..], including empty arguments.
+    char rewritten[SILT_EXEC_BYTES_MAX];
+    char current_path[NEVA_FS_PATH_MAX + 1U];
+    if (strlen(path) >= sizeof(current_path)) { errno = ENAMETOOLONG; return -1; }
+    strcpy(current_path, path);
+    SiltCleanup executable_guard;
+    uint32_t executable = 0;
+    for (unsigned depth = 0; ; depth++) {
+        char header[SILT_SHEBANG_BYTES] = { 0 };
+        uint32_t mask = silt_cleanup_begin(&executable_guard);
+        executable = silt_cleanup_adopt(&executable_guard, silt_resolve_executable(current_path, header));
+        int saved_errno = errno;
+        silt_cleanup_ready(mask);
+        if (executable) break;
+        silt_cleanup_end(&executable_guard);
+        errno = saved_errno;
+        if (errno != ENOEXEC || header[0] != '#' || header[1] != '!') return -1;
+        if (depth == 4) { errno = ELOOP; return -1; }
+        size_t end = 2;
+        while (end < sizeof(header) && header[end] && header[end] != '\n') end++;
+        if (end == sizeof(header) || header[end] != '\n') { errno = ENOEXEC; return -1; }
+        while (end > 2 && (header[end - 1] == ' ' || header[end - 1] == '\t')) end--;
+        header[end] = 0;
+        char* interpreter = header + 2;
+        while (*interpreter == ' ' || *interpreter == '\t') interpreter++;
+        char* option = interpreter;
+        while (*option && *option != ' ' && *option != '\t') option++;
+        if (*option) *option++ = 0;
+        while (*option == ' ' || *option == '\t') option++;
+        if (*interpreter != '/') { errno = ENOEXEC; return -1; }
+        char* next_arguments[SILT_EXEC_ARGUMENT_MAX + 1];
+        unsigned next_count = 0;
+        next_arguments[next_count++] = interpreter;
+        if (*option) next_arguments[next_count++] = option;
+        next_arguments[next_count++] = current_path;
+        size_t cursor = strlen(bytes) + 1U;
+        for (unsigned index = 1; index < argument_count; index++) {
+            if (next_count == SILT_EXEC_ARGUMENT_MAX) { errno = E2BIG; return -1; }
+            next_arguments[next_count++] = bytes + cursor;
+            cursor += strlen(bytes + cursor) + 1U;
+        }
+        next_arguments[next_count] = NULL;
+        char* next = rewritten;
+        if (build_argument_vector(next_arguments, next, &byte_count, &argument_count) < 0) {
+            errno = E2BIG; return -1;
+        }
+        strcpy(current_path, interpreter);
+        memcpy(bytes, next, byte_count);
+    }
+    SiltExecInfoV3 info;
     memset(&info, 0, sizeof(info));
     info.magic = SILT_EXEC_INFO_MAGIC;
     info.version = SILT_EXEC_INFO_VERSION;
@@ -295,7 +344,7 @@ int execve(const char* path, char* const arguments[], char* const environment[])
     if (environment) {
         while (environment[info.environment_count]) {
             if (info.environment_count == SILT_EXEC_ENVIRONMENT_MAX) {
-                (void)sys_handle_close(executable);
+                silt_cleanup_end(&executable_guard);
                 errno = E2BIG;
                 return -1;
             }
@@ -306,7 +355,7 @@ int execve(const char* path, char* const arguments[], char* const environment[])
                 || silt_exec_string_append(
                        &info, environment[info.environment_count], length,
                        &entry->offset) < 0) {
-                (void)sys_handle_close(executable);
+                silt_cleanup_end(&executable_guard);
                 errno = E2BIG;
                 return -1;
             }
@@ -315,13 +364,13 @@ int execve(const char* path, char* const arguments[], char* const environment[])
         }
     }
     if (silt_descriptors_exec_export(&info) < 0) {
-        (void)sys_handle_close(executable);
+        silt_cleanup_end(&executable_guard);
         errno = E2BIG;
         return -1;
     }
     int result = sys_exec_image(
         executable, bytes, byte_count, argument_count, &info, sizeof(info));
-    (void)sys_handle_close(executable);
+    silt_cleanup_end(&executable_guard);
     errno = result == NEVA_STATUS_ACCESS_DENIED ? EACCES
         : result == NEVA_STATUS_NOT_FOUND ? ENOENT : ENOEXEC;
     return -1;

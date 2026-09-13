@@ -274,6 +274,17 @@ session_object = custom_target(
   ],
 )
 
+exec_check_object = custom_target(
+  'silt-exec-check-object',
+  input: 'apps/check-exec.c',
+  output: 'silt_exec_checks.o',
+  depfile: 'silt_exec_checks.o.d',
+  command: [cross_cc] + silt_app_c_args + [
+    '-MMD', '-MQ', '@OUTPUT@', '-MF', '@DEPFILE@',
+    '-c', '@INPUT@', '-o', '@OUTPUT@',
+  ],
+)
+
 silt_app_targets = {}
 foreach app_name : silt_app_names
   app_extra_link_args = []
@@ -281,7 +292,7 @@ foreach app_name : silt_app_names
     '@INPUT@', '--start-group', silt_libc, neva_libneva, '--end-group',
   ]
   if app_name == 'check-signals'
-    app_link_inputs = ['@INPUT@', session_object, '--start-group', silt_libc, neva_libneva, '--end-group']
+    app_link_inputs = ['@INPUT@', session_object, exec_check_object, '--start-group', silt_libc, neva_libneva, '--end-group']
   endif
   if app_name == 'true'
     app_extra_link_args = ['--undefined=pager_exec_probe']
@@ -314,6 +325,18 @@ endforeach
 rootfs_manifest = files('rootfs/manifest.json')
 rootfs_sources = files(
   'rootfs/boot/dash-d2.sh',
+  'rootfs/boot/d5-conformance.sh',
+  'rootfs/boot/d5/bad',
+  'rootfs/boot/d5/long',
+  'rootfs/boot/d5/loop',
+  'rootfs/boot/d5/missing',
+  'rootfs/boot/d5/nested',
+  'rootfs/boot/d5/noexec',
+  'rootfs/boot/d5/optional',
+  'rootfs/boot/check-shebang.sh',
+  'rootfs/boot/session',
+  'rootfs/boot/session.sh',
+  'rootfs/etc/profile',
   'rootfs/etc/motd',
   'rootfs/etc/os-release',
 )
@@ -326,20 +349,44 @@ rootfs_command = [
   '--output', '@OUTPUT@',
 ]
 rootfs_dependencies = []
-rootfs_app_names = ['dash'] + silt_app_names
-rootfs_app_targets = {'dash': dash_app} + silt_app_targets
+rootfs_app_names = ['dash', 'nsh'] + silt_app_names
+rootfs_app_targets = {'dash': dash_app, 'nsh': neva_build_root / 'apps/shell.elf'} + silt_app_targets
 foreach app_name : rootfs_app_names
   rootfs_command += ['--app', app_name, rootfs_app_targets[app_name]]
-  rootfs_dependencies += rootfs_app_targets[app_name]
+  if app_name != 'nsh'
+    rootfs_dependencies += rootfs_app_targets[app_name]
+  endif
 endforeach
 
 silt_rootfs = custom_target(
   'silt-rootfs',
   input: rootfs_sources,
+  depend_files: [rootfs_manifest, neva_build_root / 'apps/shell.elf', neva_formatter],
   output: 'silt-rootfs.img',
   command: rootfs_command,
   depends: rootfs_dependencies,
   build_by_default: true,
+)
+
+test(
+  'd5-linux-profile', python,
+  args: [files('tools/test_d5_reference.py'), dash_src / 'dash',
+         source_root / 'rootfs/boot/d5-conformance.sh'],
+)
+test(
+  'd5-release-image', python,
+  args: [files('tools/test_d5_image.py'), '--neva-source', neva_source_root,
+         '--neva-build', neva_build_root, '--silt-build', meson.current_build_dir()],
+  depends: silt_rootfs,
+)
+
+run_target(
+  'd5-qemu-test',
+  command: [python, files('tools/test_d5_release.py'),
+    '--neva-source', neva_source_root, '--neva-build', neva_build_root,
+    '--rootfs', silt_rootfs, '--smp', '4',
+    '--output', meson.current_build_dir() / 'd5-release'],
+  depends: silt_rootfs,
 )
 
 run_target(
@@ -372,7 +419,7 @@ run_target(
 summary(
   {
     'dash version': '0.5.13.5',
-    'dash mode': 'D4 interactive job-control bring-up',
+    'dash mode': 'D5 /bin/sh release',
     'job control': 'enabled through capability-scoped process groups and ttyd',
     'line editing': 'disabled (dash SMALL configuration)',
     'Neva source': neva_source_dir,

@@ -9,6 +9,7 @@ import shutil
 import sys
 
 from pipeline_fault import PipelineFault
+from release_boot import enter_recovery
 
 
 def main():
@@ -69,7 +70,8 @@ def main():
 
     try:
         session.start()
-        check(session.read_until(b'B3_INITD_READY: PASS', timeout=45), 'service graph ready')
+        enter_recovery(session, runner)
+        check(b'B3_INITD_READY: PASS' in session.output, 'service graph ready')
         start = len(session.output)
         session.send('')
         check(session.read_until(runner.PROMPT, timeout=15, start_offset=start), 'recovery prompt')

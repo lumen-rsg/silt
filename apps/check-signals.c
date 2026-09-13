@@ -7,6 +7,7 @@
 #include <termios.h>
 
 int silt_check_sessions(int argc, char** argv);
+int silt_check_exec(int argc, char** argv);
 
 static volatile sig_atomic_t g_received;
 static volatile sig_atomic_t g_mask_valid;
@@ -130,6 +131,7 @@ static int run_checks(int argc, char* argv[]) {
 }
 
 int main(int argc, char* argv[]) {
+    if (argc > 1 && strncmp(argv[1], "d5-", 3) == 0) return silt_check_exec(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "sessions")) return silt_check_sessions(argc - 1, argv + 1);
     int result = run_checks(argc, argv);
     if (result != 0) {

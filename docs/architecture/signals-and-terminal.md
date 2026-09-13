@@ -117,7 +117,9 @@ Pipes use Neva's capability-backed byte stream, not shared-memory libc counters.
 Last-writer death drains buffered bytes then returns EOF; last-reader death
 wakes writers with SIGPIPE/EPIPE. Fork/dup/exec and FD_CLOEXEC use endpoint handle
 lifetime, including death before a suspended child runs. The private Silt exec
-handoff is now version 2; rebuild all Silt images together.
+handoff was version 2 at this stage. D5 advances it to version 3 for cwd/umask
+preservation; see the [current release profile](d5-release-profile.md) and rebuild
+all Silt images together.
 
 The buffer holds 4096 bytes and PIPE_BUF is 512 bytes. Writes up to PIPE_BUF
 are atomic; larger writes are split. Readiness uses broadcast one-shot Events

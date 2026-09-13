@@ -1,0 +1,10 @@
+PATH=/bin
+HOME=/var/lib/shell
+SHELL=/bin/sh
+USER=session
+LOGNAME=session
+LC_ALL=C
+PS1='silt$ '
+export PATH HOME SHELL USER LOGNAME LC_ALL PS1
+umask 022
+cd "$HOME" || cd / || return 1

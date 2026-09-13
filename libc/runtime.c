@@ -29,7 +29,7 @@ static char g_environment_strings[SILT_EXEC_STRING_BYTES];
 char** environ = g_environment;
 static mode_t g_umask = 022;
 
-void silt_environment_exec_restore(const SiltExecInfoV2* info) {
+void silt_environment_exec_restore(const SiltExecInfoV3* info) {
     for (size_t index = 0; index <= SILT_ENVIRONMENT_MAX; index++) {
         g_environment[index] = NULL;
     }
@@ -266,6 +266,8 @@ char* strsignal(int signal_number) {
         default: return "Signal";
     }
 }
+
+uint16_t silt_creation_mask(void) { return (uint16_t)g_umask; }
 
 mode_t umask(mode_t mask) {
     mode_t previous = g_umask;

@@ -480,13 +480,27 @@ conformance-matrix milestone; this does not claim full OS POSIX certification.
 
 ## Milestone D5: `/bin/sh` release
 
-- Run upstream dash tests on Linux as the reference and under Neva/QEMU as the
-  target, recording deliberate Silt deviations.
-- Add script shebang handling and system startup scripts.
-- Install dash as `/bin/dash` and `/bin/sh`; retain `/bin/nsh` in the recovery
-  image and init-death path.
-- Freeze the supported POSIX profile and publish a conformance matrix. Shell
-  compatibility alone must not be described as full OS POSIX certification.
+Status: **closed on 2026-09-13**. The [final acceptance record](../architecture/d5-release-acceptance.md)
+contains 33 passing gates and 35 fresh QEMU boots, including four consecutive
+455-check SMP-8 rootfs passes on unchanged artifacts.
+
+- Install `/bin/sh` and `/bin/dash` as one executable inode, and `/bin/nsh`
+  as the retained diagnostic shell. Boot through `/boot/session.sh` and
+  `/etc/profile` after initd readiness; retain a console-only recovery mode
+  when initd dies.
+- Interpret bounded shebang chains in Silt `execve`, preserving empty argv,
+  environment, cwd, umask and surviving descriptors. Refuse malformed,
+  non-executable, missing, recursive and oversized interpreter cases.
+- Run the same twenty new shell cases on pinned Linux Dash and Silt. The pinned
+  upstream tree has no bundled standalone suite; these original cases include
+  an attributable upstream-fix regression, with the earlier D4 reference gates
+  retained. Do not describe these as the full upstream suite.
+- Freeze the [supported profile and conformance matrix](../architecture/d5-release-profile.md),
+  including provider/resource limits and deliberate deviations. Shell
+  compatibility does not establish full OS POSIX certification.
+- Require host, kernel/VM rollback, normal release, failing-startup, init-death,
+  full D4 rootfs and admission-refusal gates on unchanged artifacts, with fresh
+  media and consecutive SMP-8 passes.
 
 ## Initial missing-surface ledger
 

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define SILT_EXEC_INFO_MAGIC 0x31495853U // "SXI1"
-#define SILT_EXEC_INFO_VERSION 2U
+#define SILT_EXEC_INFO_VERSION 3U
 #define SILT_EXEC_ENVIRONMENT_MAX 64U
 #define SILT_EXEC_DESCRIPTOR_MAX 32U
 #define SILT_EXEC_DESCRIPTION_MAX 32U
@@ -46,17 +46,18 @@ typedef struct {
     uint16_t description_count;
     uint16_t reserved_pipe_count;
     uint16_t string_bytes;
-    uint16_t reserved;
+    uint16_t creation_mask;
+    SiltExecStringV2 working_directory;
     SiltExecStringV2 environment[SILT_EXEC_ENVIRONMENT_MAX];
     SiltExecDescriptorV2 descriptors[SILT_EXEC_DESCRIPTOR_MAX];
     SiltExecDescriptionV2 descriptions[SILT_EXEC_DESCRIPTION_MAX];
     char strings[SILT_EXEC_STRING_BYTES];
-} SiltExecInfoV2;
+} SiltExecInfoV3;
 
-_Static_assert(sizeof(SiltExecInfoV2) <= 4096U,
+_Static_assert(sizeof(SiltExecInfoV3) <= 4096U,
                "Silt exec handoff must fit one Neva page");
 
-static inline int silt_exec_string_append(SiltExecInfoV2* info,
+static inline int silt_exec_string_append(SiltExecInfoV3* info,
                                           const char* value, size_t length,
                                           uint16_t* offset_out) {
     if (!info || !value || !offset_out || length > UINT16_MAX

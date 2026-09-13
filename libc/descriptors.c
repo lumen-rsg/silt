@@ -178,7 +178,44 @@ static NevaServiceResult resolve_path(const char* path, uint32_t flags,
         0, 0, sizeof(*request) + (uint32_t)length, NEVA_DEADLINE_INFINITE);
 }
 
-uint32_t silt_resolve_executable(const char* path) {
+static int executable_header(uint32_t file, char header[SILT_SHEBANG_BYTES]) {
+    NevaRemoteFileInfoV1 info = { 0 };
+    NevaServiceResult query = sys_service_call(file, REMOTE_FILE_RPC_QUERY,
+        (uintptr_t)&info, 0, 0, sizeof(info), NEVA_DEADLINE_INFINITE);
+    if (query.status != NEVA_STATUS_OK) { errno = status_errno(query.status); return -1; }
+    if (info.magic != NEVA_FILE_INFO_MAGIC || info.version != NEVA_FILESYSTEM_ABI_VERSION
+        || info.size != sizeof(info)) { errno = ENOEXEC; return -1; }
+    // Resolution may attenuate unsupported rights rather than reject the whole
+    // request. Reading a script alone does not authorize executing it.
+    if (!(info.rights & HANDLE_RIGHT_EXECUTE_MAP) || !(info.mode & 0111U)) {
+        errno = EACCES;
+        return -1;
+    }
+    uint32_t count = info.byte_size < SILT_SHEBANG_BYTES ? (uint32_t)info.byte_size : SILT_SHEBANG_BYTES;
+    memset(header, 0, SILT_SHEBANG_BYTES);
+    if (!count) { errno = ENOEXEC; return -1; }
+    uint32_t shm = sys_shm_create(SILT_IO_BYTES);
+    void* mapping = shm ? sys_shm_map(shm) : (void*)-1;
+    uint32_t transfer = mapping != (void*)-1 ? sys_handle_dup(shm,
+        HANDLE_RIGHT_READ | HANDLE_RIGHT_WRITE | HANDLE_RIGHT_TRANSFER) : 0;
+    NevaFileIoV1 request = {
+        .magic = NEVA_FILE_IO_MAGIC, .version = NEVA_FILESYSTEM_ABI_VERSION,
+        .size = sizeof(request), .data_region_handle = transfer, .data_length = count,
+        .expected_change_generation = info.change_generation,
+        .absolute_deadline_ns = NEVA_DEADLINE_INFINITE,
+    };
+    NevaServiceResult result = transfer ? sys_service_call(file, REMOTE_FILE_RPC_READ_AT,
+        (uintptr_t)&request, 0, transfer, sizeof(request), NEVA_DEADLINE_INFINITE)
+        : (NevaServiceResult){ .status = NEVA_STATUS_NO_MEMORY };
+    if (result.status == NEVA_STATUS_OK) memcpy(header, mapping, count);
+    if (transfer) (void)sys_handle_close(transfer);
+    if (mapping != (void*)-1) (void)sys_shm_unmap(shm);
+    else if (shm) (void)sys_handle_close(shm);
+    if (result.status != NEVA_STATUS_OK) { errno = status_errno(result.status); return -1; }
+    return 0;
+}
+
+uint32_t silt_resolve_executable(const char* path, char header[SILT_SHEBANG_BYTES]) {
     char normalized[NEVA_FS_PATH_MAX + 1U];
     if (normalize_path(path, normalized) < 0) return NEVA_INVALID_HANDLE;
     NevaServiceResult file = resolve_path(
@@ -187,6 +224,17 @@ uint32_t silt_resolve_executable(const char* path) {
             | HANDLE_RIGHT_METADATA_READ);
     if (file.status != NEVA_STATUS_OK || !file.handle) {
         errno = status_errno(file.status);
+        return NEVA_INVALID_HANDLE;
+    }
+    // Read through the same execute-authorized file before allocating a pager
+    // binding. Scripts must not consume the provider's finite ELF cache.
+    if (executable_header(file.handle, header) < 0) {
+        (void)sys_handle_close(file.handle);
+        return NEVA_INVALID_HANDLE;
+    }
+    if (memcmp(header, "\177ELF", 4) != 0) {
+        (void)sys_handle_close(file.handle);
+        errno = ENOEXEC;
         return NEVA_INVALID_HANDLE;
     }
     NevaServiceResult pager = sys_service_call(
@@ -446,9 +494,13 @@ static int description_exec_survives(int description) {
     return 0;
 }
 
-int silt_descriptors_exec_export(SiltExecInfoV2* info) {
+int silt_descriptors_exec_export(SiltExecInfoV3* info) {
     if (!info) return -1;
     descriptors_initialize();
+    info->creation_mask = silt_creation_mask();
+    info->working_directory.length = (uint16_t)strlen(g_cwd);
+    if (silt_exec_string_append(info, g_cwd, info->working_directory.length,
+            &info->working_directory.offset) < 0) return -1;
     for (int description = 0; description < SILT_DESCRIPTION_MAX;
          description++) {
         SiltOpenDescription* source = &g_descriptions[description];
@@ -491,12 +543,24 @@ int silt_descriptors_exec_export(SiltExecInfoV2* info) {
     return 0;
 }
 
-int silt_descriptors_exec_restore(const SiltExecInfoV2* info) {
+int silt_descriptors_exec_restore(const SiltExecInfoV3* info) {
     if (!info || info->descriptor_count > SILT_EXEC_DESCRIPTOR_MAX
         || info->description_count > SILT_EXEC_DESCRIPTION_MAX
         || info->string_bytes > SILT_EXEC_STRING_BYTES) {
         return -1;
     }
+    uint16_t cwd_offset = info->working_directory.offset;
+    uint16_t cwd_length = info->working_directory.length;
+    if (!cwd_length || cwd_length > NEVA_FS_PATH_MAX || cwd_offset >= info->string_bytes
+        || cwd_length >= info->string_bytes - cwd_offset
+        || info->strings[cwd_offset] != '/' || info->strings[cwd_offset + cwd_length]
+        || strlen(info->strings + cwd_offset) != cwd_length
+        || (info->creation_mask & ~0777U)) return -1;
+    char normalized[NEVA_FS_PATH_MAX + 1U];
+    if (normalize_path(info->strings + cwd_offset, normalized) < 0
+        || strcmp(normalized, info->strings + cwd_offset) != 0) return -1;
+    strcpy(g_cwd, normalized);
+    (void)umask(info->creation_mask);
     memset(g_descriptors, 0, sizeof(g_descriptors));
     memset(g_descriptions, 0, sizeof(g_descriptions));
     for (uint16_t index = 0; index < info->description_count; index++) {
@@ -563,6 +627,11 @@ static int query_file(uint32_t handle, NevaRemoteFileInfoV1* info) {
         errno = status_errno(result.status);
         return -1;
     }
+    if (info->magic != NEVA_FILE_INFO_MAGIC
+        || info->version != NEVA_FILESYSTEM_ABI_VERSION || info->size != sizeof(*info)) {
+        errno = EIO;
+        return -1;
+    }
     return 0;
 }
 
@@ -626,7 +695,7 @@ static NevaServiceResult create_file(const char* path, uint32_t rights,
         .name_length = (uint16_t)name_length,
         .kind = NEVA_FS_KIND_FILE,
         .requested_rights = rights,
-        .mode = mode & 0777U,
+        .mode = mode & 0777U & ~(uint32_t)silt_creation_mask(),
         .expected_directory_generation = info.directory_generation,
     };
     memcpy(payload + sizeof(*request), leaf, name_length);
@@ -1173,12 +1242,13 @@ int stat(const char* path, struct stat* status) {
     NevaServiceResult result = resolve_path(
         normalized, NEVA_RESOLVE_FLAG_DIRECTORY, HANDLE_RIGHT_METADATA_READ);
     if (result.status == NEVA_STATUS_OK && result.handle) {
-        NevaDirectoryInfoV1 info;
+        NevaDirectoryInfoV1 info = { 0 };
         NevaServiceResult queried = sys_service_call(
             result.handle, DIRECTORY_RPC_QUERY, (uint64_t)(uintptr_t)&info,
             0, 0, sizeof(info), NEVA_DEADLINE_INFINITE);
         (void)sys_handle_close(result.handle);
-        if (queried.status == NEVA_STATUS_OK) {
+        if (queried.status == NEVA_STATUS_OK && info.magic == NEVA_DIRECTORY_INFO_MAGIC
+            && info.version == NEVA_FILESYSTEM_ABI_VERSION && info.size == sizeof(info)) {
             memset(status, 0, sizeof(*status));
             status->st_ino = (ino_t)info.object_id;
             status->st_mode = S_IFDIR | 0555;
@@ -1235,7 +1305,15 @@ int chdir(const char* path) {
         errno = status_errno(result.status);
         return -1;
     }
+    NevaDirectoryInfoV1 info = { 0 };
+    NevaServiceResult queried = sys_service_call(result.handle, DIRECTORY_RPC_QUERY,
+        (uintptr_t)&info, 0, 0, sizeof(info), NEVA_DEADLINE_INFINITE);
     (void)sys_handle_close(result.handle);
+    if (queried.status != NEVA_STATUS_OK || info.magic != NEVA_DIRECTORY_INFO_MAGIC
+        || info.version != NEVA_FILESYSTEM_ABI_VERSION || info.size != sizeof(info)) {
+        errno = queried.status != NEVA_STATUS_OK ? status_errno(queried.status) : ENOTDIR;
+        return -1;
+    }
     strcpy(g_cwd, normalized);
     return 0;
 }

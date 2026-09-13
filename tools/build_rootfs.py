@@ -80,6 +80,20 @@ def main() -> int:
     ]
     for name in expected_apps:
         command.extend(["--extra-app", name, str(supplied[name])])
+    aliases = manifest.get('aliases', {})
+    if not isinstance(aliases, dict):
+        raise ValueError('rootfs aliases must be an object')
+    for alias, target in sorted(aliases.items()):
+        if (not isinstance(alias, str) or not alias or '/' in alias
+                or alias in supplied or target not in supplied):
+            raise ValueError('alias must name an existing application with an unused basename')
+        command.extend(['--hardlink', 'bin/' + target, 'bin/' + alias])
+    executable_paths = manifest.get('executable_paths', [])
+    if (not isinstance(executable_paths, list) or executable_paths != sorted(set(executable_paths))
+            or any(path not in required_paths for path in executable_paths)):
+        raise ValueError('executable_paths must be sorted unique required paths')
+    for path in executable_paths:
+        command.extend(['--executable-path', path])
     environment = os.environ.copy()
     environment["SOURCE_DATE_EPOCH"] = "0"
     subprocess.run(command, check=True, env=environment)

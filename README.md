@@ -12,9 +12,9 @@ Neva shell (`nsh`) remains the bounded recovery and diagnostics shell.
 
 The repository currently provides:
 
-- a deterministic 8 MiB Silt root filesystem with release metadata, nine
-  capability-native diagnostic utilities, and `/bin/dash`;
-- an end-to-end QEMU gate that boots that exact image on Neva, drives `nsh`,
+- a deterministic 8 MiB Silt root filesystem with release metadata, capability-native
+  diagnostic utilities, `/bin/sh`, `/bin/dash`, and `/bin/nsh`;
+- an end-to-end QEMU gate that boots that exact image into `/bin/sh` on Neva, retains `nsh`,
   exercises service-backed input and system information, and verifies teardown;
 - a reproducible, hash-pinned dash 0.5.13.5 source preparation step;
 - a freestanding ARM64 cross-build that compiles every dash translation unit,
@@ -30,11 +30,13 @@ The image runs a curated dash suite in QEMU, including shell-language
 built-ins, scripts, scoped filesystem lookup, external commands, subshells,
 command substitution, redirection, environment/descriptor handoff across
 `execve`, and multi-stage pipelines. Pipeline stages are attached to one
-capability-backed ProcessGroup before they resume. Run `dash -i` from nsh for
-experimental interactive job control (`jobs`, `bg`, `fg`, Ctrl-C, and Ctrl-Z).
-nsh remains the default recovery shell; dash is not yet installed as `/bin/sh`.
-The supported subset and remaining gaps are documented in
-`docs/architecture/signals-and-terminal.md`.
+capability-backed ProcessGroup before they resume. Normal startup runs
+`/boot/session.sh` and `/etc/profile`, then opens interactive `/bin/sh` with
+`jobs`, `bg`, `fg`, Ctrl-C, and Ctrl-Z. Run `nsh` for diagnostics, or exit Dash
+to return to the retained recovery shell. Silt's `execve` supports bounded
+executable shebang scripts. The [D5 release profile](docs/architecture/d5-release-profile.md)
+freezes supported behavior, reference provenance, and deliberate limits; it does
+not claim full OS POSIX certification.
 
 ## Build Silt
 

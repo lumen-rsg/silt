@@ -16,6 +16,7 @@ from dash_pipeline_cases import drive_terminal, run_pipeline_cases
 from dash_resource_cases import run_resource_cases
 from dash_descriptor_cases import run_descriptor_cases
 from wait_observer import guest_suspend
+from release_boot import enter_recovery
 
 
 def command_output(
@@ -164,8 +165,7 @@ def main() -> int:
     try:
         print("=== Booting Neva with the Silt R0 rootfs ===")
         session.start()
-        if not session.read_until(runner.PROMPT, timeout=120):
-            raise TimeoutError("boot did not reach the recovery prompt")
+        enter_recovery(session, runner)
         boot_markers = (
             b"B2_INITD_READY: PASS",
             b"B3_INITD_READY: PASS",
